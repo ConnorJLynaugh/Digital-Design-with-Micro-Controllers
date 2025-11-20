@@ -1,8 +1,4 @@
-// seb355 & cjl298 Fall 2025
-
-// Standard Libraries
 #include <stdio.h>
-#include <math.h>
 #include "pico/stdlib.h"
 #include "pico/error.h"
 #include "hardware/i2c.h"
@@ -10,21 +6,6 @@
 #include "pico/binary_info.h"
 #include "pca9685.h"
 #include "movement_library.h"
-
-// BTstack
-#include "btstack.h"
-
-// High-level libraries
-#include "pico/cyw43_arch.h"
-#include "pico/btstack_cyw43.h"
-#include "pico/sync.h"
-
-// Hardware API's
-#include "hardware/timer.h"
-#include "hardware/irq.h"
-#include "hardware/spi.h"
-#include "hardware/sync.h"
-#include "hardware/clocks.h"
 
 // I2C configuration
 #define I2C_PORT i2c0
@@ -63,60 +44,49 @@ void print_menu(void) {
 int main(void) {
     // Initialize stdio for USB serial
     stdio_init_all();
+
     
     // Wait for USB serial connection
     sleep_ms(2000);
     
     printf("\n\n=== Quadruped Robot Starting ===\n");
+    printf("I2C Configuration:\n");
+    printf("  SDA Pin: GPIO %d\n", I2C_SDA_PIN);
+    printf("  SCL Pin: GPIO %d\n", I2C_SCL_PIN);
+    printf("  I2C Frequency: %d Hz\n", I2C_FREQ);
+    printf("  PCA9685 Address: 0x%02X\n\n", PCA9685_DEFAULT_ADDRESS);
+    
     printf("Initializing I2C...\n");
     // Initialize I2C
     i2c_init(I2C_PORT, I2C_FREQ);
     gpio_set_function(I2C_SDA_PIN, GPIO_FUNC_I2C);
     gpio_set_function(I2C_SCL_PIN, GPIO_FUNC_I2C);
     gpio_pull_up(I2C_SDA_PIN);
-    gpio_pull_up(I2C_SDA_PIN);
     gpio_pull_up(I2C_SCL_PIN);
+    
+    // Scan I2C bus
+    printf("Scanning I2C bus (this may take a moment)...\n");
+    bool found = false;
+    for (int addr = 0; addr < 128; addr++) {
+        uint8_t data;
+        int ret = i2c_read_timeout_us(I2C_PORT, addr, &data, 1, false, 10000);
+        if (ret > 0) {
+            printf("  Found device at address 0x%02X\n", addr);
+            found = true;
+        }
+    }
+    if (!found) {
+        printf("  No I2C devices found! Check wiring and power.\n");
+    }
     
     // Initialize PCA9685
     printf("Initializing PCA9685...\n");
     pca9685_init(&pwm, I2C_PORT, PCA9685_DEFAULT_ADDRESS);
     pca9685_set_pwm_freq(&pwm, 60.0f);
-
-    /////////// EVERYTHING BELOW INSTANTIATES AND INTIALIZES GATT SERVER ///////////////
-
-    // initialize CYW43 driver architecture (will enable BT if/because CYW43_ENABLE_BLUETOOTH == 1)
-    if (cyw43_arch_init()) {
-        printf("failed to initialise cyw43_arch\n");
-        return -1;
-    }
-
-    // Initialize L2CAP and security manager
-    l2cap_init();
-    sm_init();
-
-    // Initialize ATT server, no general read/write callbacks
-    // because we'll set one up for each service
-    att_server_init(profile_data, NULL, NULL);   
-
-    // Instantiate our custom service handler
-    custom_service_server_init( characteristic_a_tx, characteristic_b_tx,
-                                characteristic_c_tx, characteristic_d_rx,
-                                characteristic_e_tx, characteristic_f_tx) ;
-
-    // inform about BTstack state
-    hci_event_callback_registration.callback = &packet_handler;
-    hci_add_event_handler(&hci_event_callback_registration);
-
-    // register for ATT event
-    att_server_register_packet_handler(packet_handler);
-
-    // turn on bluetooth!
-    hci_power_control(HCI_POWER_ON);
-
-    ////////////////////////// END GATT SERVER //////////////////////////////
     
     printf("Please wait for 10 seconds...\n");
     stand_up();
+    //setup_servos();
     printf("I am Ready!\n");
     
     print_menu();
