@@ -21,25 +21,42 @@ cmake_minimum_required(VERSION 3.13)
 include(pico_sdk_import.cmake)
 
 # give the project a name (anything you want)
-project(QUADRAPED C CXX ASM)
+project(QUADRAPED_WIFI C CXX ASM)
 
 # initialize the sdk
 pico_sdk_init()
 
-add_executable(QUADRAPED)
-
-target_sources(QUADRAPED PRIVATE 
+add_executable(QUADRAPED_WIFI
+    # Robot
     main.c
     movement_library.c
     pca9685.c
+    # Wifi
+    picow_access_point.c
+    dhcpserver/dhcpserver.c
+    dnsserver/dnsserver.c
+)
+
+target_include_directories(QUADRAPED_WIFI PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/dhcpserver
+    ${CMAKE_CURRENT_LIST_DIR}/dnsserver
 )
 
 # Pull in our pico_stdlib which pulls in commonly used features
-target_link_libraries(QUADRAPED 
+target_link_libraries(QUADRAPED_WIFI 
     pico_stdlib 
     hardware_i2c
     pico_bootsel_via_double_reset
+
+    # Wifi
+    pico_cyw43_arch_lwip_threadsafe_background
+    #pico_cyw43_arch_lwip_poll
 )
 
-# create map/bin/hex file etc.
-pico_add_extra_outputs(QUADRAPED)
+# You can change the address below to change the address of the access point
+pico_configure_ip4_address(QUADRAPED_WIFI PRIVATE
+        CYW43_DEFAULT_IP_AP_ADDRESS 192.168.4.1
+)
+
+pico_add_extra_outputs(QUADRAPED_WIFI)
