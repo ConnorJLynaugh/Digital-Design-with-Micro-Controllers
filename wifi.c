@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "wifi.h"
+#include "movement_library.h"
 
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
@@ -84,7 +85,48 @@ static err_t tcp_server_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
     return ERR_OK;
 }
 
+const char HOME_PAGE[] =
+"<html><head>"
+"<style>"
+"body { background:#111; color:white; font-family:sans-serif; text-align:center; }"
+"button { width:200px; padding:20px; margin:15px; font-size:24px; border-radius:12px; "
+"border:none; background:#444; color:white; }"
+"button:active { background:#666; }"
+"</style>"
+"</head><body>"
+"<h1>Quadruped Controls</h1>"
+"<button onclick=\"location.href='/forward'\">Forward</button><br>"
+"<button onclick=\"location.href='/backward'\">Backward</button><br>"
+"<button onclick=\"location.href='/left'\">Left</button><br>"
+"<button onclick=\"location.href='/right'\">Right</button><br>"
+"</body></html>";
+
 static int test_server_content(const char *request, const char *params, char *result, size_t max_result_len) {
+    if (strcmp(request, "/forward") == 0) {
+        forward();
+        return snprintf(result, max_result_len,
+            "<html><body><h1>Moving Forward</h1><a href=\"/\">Back</a></body></html>");
+    }
+
+    if (strcmp(request, "/backward") == 0) {
+        backward();
+        return snprintf(result, max_result_len,
+            "<html><body><h1>Moving Backward</h1><a href=\"/\">Back</a></body></html>");
+    }
+
+    if (strcmp(request, "/left") == 0) {
+        left();
+        return snprintf(result, max_result_len,
+            "<html><body><h1>Turning Left</h1><a href=\"/\">Back</a></body></html>");
+    }
+
+    if (strcmp(request, "/right") == 0) {
+        right();
+        return snprintf(result, max_result_len,
+            "<html><body><h1>Turning Right</h1><a href=\"/\">Back</a></body></html>");
+    }
+    
+    // Toggle LED
     int len = 0;
     if (strncmp(request, LED_TEST, sizeof(LED_TEST) - 1) == 0) {
         // Get the state of the led
