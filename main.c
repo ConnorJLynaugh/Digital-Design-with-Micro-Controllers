@@ -7,6 +7,8 @@
 #include "pca9685.h"
 #include "movement_library.h"
 
+#include "wifi.h"
+
 // I2C configuration
 #define I2C_PORT i2c0
 #define I2C_SDA_PIN 4
@@ -45,9 +47,16 @@ int main(void) {
     // Initialize stdio for USB serial
     stdio_init_all();
 
-    
     // Wait for USB serial connection
     sleep_ms(2000);
+
+    ////////////////// WIFI //////////////////
+    if (!wifi_ap_start("quadraped_ap", "password")) {
+        printf("Failed to start WiFi AP\n");
+    } else {
+        printf("WiFi AP started: SSID=quadraped_ap, password=password\n");
+    }
+    ////////////////// WIFI END //////////////////
     
     printf("\n\n=== Quadruped Robot Starting ===\n");
     printf("I2C Configuration:\n");
@@ -239,6 +248,9 @@ int main(void) {
                     break;
             }
         }
+
+        // Wifi
+        wifi_ap_background();
         
         // Small delay to prevent CPU hogging
         sleep_ms(10);
