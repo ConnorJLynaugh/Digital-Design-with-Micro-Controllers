@@ -87,52 +87,89 @@ static err_t tcp_server_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
 
 static const char HOME_PAGE[] =
 "<html><head>"
+"<meta name='viewport' content='width=device-width, initial-scale=1.0'>"
 "<style>"
-"body { background:#121212; color:white; font-family:sans-serif; text-align:center; }"
-"button { width:220px; padding:20px; margin:15px; font-size:24px; border-radius:12px; "
-"border:none; background:#444; color:white; }"
-"button:active { background:#666; }"
+"body { background:#111; color:white; font-family:sans-serif; text-align:center; margin:0; }"
+"#joystick-bg { width:300px; height:300px; background:#222; border-radius:50%; margin:100px auto; position:relative; touch-action:none; }"
+"#joystick { width:120px; height:120px; background:#555; border-radius:50%; position:absolute; left:90px; top:90px; transition:0.05s; }"
 "h1 { margin-top:40px; }"
 "</style>"
 "</head><body>"
-"<h1>Quadruped Controls</h1>"
-"<button onclick=\"location.href='/forward'\">Forward</button><br>"
-"<button onclick=\"location.href='/backward'\">Backward</button><br>"
-"<button onclick=\"location.href='/left'\">Left</button><br>"
-"<button onclick=\"location.href='/right'\">Right</button><br>"
-"<br><h3>Utilities</h3>"
-"<button onclick=\"location.href='/ledtest'\">LED Test</button>"
+"<h1>Quadruped Joystick Control</h1>"
+"<div id='joystick-bg'><div id='joystick'></div></div>"
+
+"<script>"
+"const joy=document.getElementById('joystick');"
+"const bg=document.getElementById('joystick-bg');"
+"let center={x:bg.offsetWidth/2,y:bg.offsetHeight/2};"
+"let maxDist=bg.offsetWidth/2;"
+
+"function send(dir,spd){ fetch(`/cmd?dir=${dir}&spd=${spd}`).catch(()=>{}); }"
+
+"bg.addEventListener('touchmove',e=>{"
+" let rect=bg.getBoundingClientRect();"
+" let x=e.touches[0].clientX-rect.left;"
+" let y=e.touches[0].clientY-rect.top;"
+" let dx=x-center.x; let dy=y-center.y;"
+" let dist=Math.sqrt(dx*dx+dy*dy);"
+" if(dist>maxDist){ dx*=maxDist/dist; dy*=maxDist/dist; }"
+" joy.style.left=(center.x+dx-joy.offsetWidth/2)+'px';"
+" joy.style.top=(center.y+dy-joy.offsetHeight/2)+'px';"
+" let angle=Math.atan2(dy,dx);"
+" let spd=Math.min(1.0, dist/maxDist).toFixed(2);"
+" let dir=angleToDir(angle);"
+" send(dir,spd);"
+"});"
+
+"bg.addEventListener('touchend',e=>{"
+" joy.style.left=center.x-joy.offsetWidth/2+'px';"
+" joy.style.top=center.y-joy.offsetHeight/2+'px';"
+"});"
+
+"function angleToDir(a){"
+" if(a>-0.78 && a<0.78) return 'right';"
+" if(a>=0.78 && a<=2.35) return 'forward';"
+" if(a<=-0.78 && a>=-2.35) return 'backward';"
+" return 'left';"
+"}"
+"</script>"
+
 "</body></html>";
 
 static int test_server_content(const char *request, const char *params, char *result, size_t max_result_len) {
-    // === HOMEPAGE ===
+
+    // === Serve Joystick UI ===
     if (strcmp(request, "/") == 0 || strcmp(request, "/index") == 0) {
         return snprintf(result, max_result_len, "%s", HOME_PAGE);
     }
 
-    // === ROBOT CONTROLS ===
-    if (strncmp(request, "/forward", 8) == 0) {
-        forward();
-        return snprintf(result, max_result_len, "%s", HOME_PAGE);
+    // === Joystick Commands ===
+    // Example: /cmd?dir=forward&spd=0.60
+    if (strncmp(request, "/cmd", 4) == 0) {
+        char dir[32] = {0};
+        float spd = 0.0f;
+
+        if (params) {
+            sscanf(params, "dir=%31[^&]&spd=%f", dir, &spd);
+
+            if (strcmp(dir, "forward") == 0) {
+                forward();   // one cycle movement
+            } 
+            else if (strcmp(dir, "backward") == 0) {
+                backward();
+            } 
+            else if (strcmp(dir, "left") == 0) {
+                left();
+            } 
+            else if (strcmp(dir, "right") == 0) {
+                right();
+            }
+        }
+
+        return snprintf(result, max_result_len, "OK");
     }
 
-    if (strncmp(request, "/backward", 9) == 0) {
-        backward();
-        return snprintf(result, max_result_len, "%s", HOME_PAGE);
-    }
-
-    if (strncmp(request, "/left", 5) == 0) {
-        left();
-        return snprintf(result, max_result_len, "%s", HOME_PAGE);
-    }
-
-    if (strncmp(request, "/right", 6) == 0) {
-        right();
-        return snprintf(result, max_result_len, "%s", HOME_PAGE);
-    }
-
-
-    // === LED TEST (KEPT FOR DEBUGGING) ===
+    // === Optional: LED demo still supported ===
     if (strncmp(request, LED_TEST, sizeof(LED_TEST) - 1) == 0) {
         bool value;
         cyw43_gpio_get(&cyw43_state, LED_GPIO, &value);
@@ -151,7 +188,7 @@ static int test_server_content(const char *request, const char *params, char *re
                         led_state ? "OFF" : "ON");
     }
 
-    // === DEFAULT FALLBACK (UNKNOWN ROUTE) ===
+    // === Unknown URL ===
     return snprintf(result, max_result_len,
         "<html><body><h1>Unknown Command</h1><a href=\"/\">Back</a></body></html>");
 }
