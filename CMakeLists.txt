@@ -12,7 +12,7 @@ if (EXISTS ${picoVscode})
     include(${picoVscode})
 endif()
 # ====================================================================================
-set(PICO_BOARD pico CACHE STRING "Board type")
+set(PICO_BOARD pico_w CACHE STRING "Board type")
 
 # cmake version
 cmake_minimum_required(VERSION 3.13)
@@ -60,3 +60,4 @@ pico_configure_ip4_address(QUADRAPED_WIFI PRIVATE
 )
 
 pico_add_extra_outputs(QUADRAPED_WIFI)
+
