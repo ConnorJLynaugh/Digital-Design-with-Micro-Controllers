@@ -32,7 +32,7 @@ add_executable(QUADRAPED_WIFI
     movement_library.c
     pca9685.c
     # Wifi
-    picow_access_point.c
+    wifi.c
     dhcpserver/dhcpserver.c
     dnsserver/dnsserver.c
 )
@@ -60,4 +60,5 @@ pico_configure_ip4_address(QUADRAPED_WIFI PRIVATE
 )
 
 pico_add_extra_outputs(QUADRAPED_WIFI)
+
 
