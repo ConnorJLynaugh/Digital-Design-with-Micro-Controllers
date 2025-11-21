@@ -85,13 +85,14 @@ static err_t tcp_server_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
     return ERR_OK;
 }
 
-const char HOME_PAGE[] =
+static const char HOME_PAGE[] =
 "<html><head>"
 "<style>"
-"body { background:#111; color:white; font-family:sans-serif; text-align:center; }"
-"button { width:200px; padding:20px; margin:15px; font-size:24px; border-radius:12px; "
+"body { background:#121212; color:white; font-family:sans-serif; text-align:center; }"
+"button { width:220px; padding:20px; margin:15px; font-size:24px; border-radius:12px; "
 "border:none; background:#444; color:white; }"
 "button:active { background:#666; }"
+"h1 { margin-top:40px; }"
 "</style>"
 "</head><body>"
 "<h1>Quadruped Controls</h1>"
@@ -99,62 +100,60 @@ const char HOME_PAGE[] =
 "<button onclick=\"location.href='/backward'\">Backward</button><br>"
 "<button onclick=\"location.href='/left'\">Left</button><br>"
 "<button onclick=\"location.href='/right'\">Right</button><br>"
+"<br><h3>Utilities</h3>"
+"<button onclick=\"location.href='/ledtest'\">LED Test</button>"
 "</body></html>";
 
 static int test_server_content(const char *request, const char *params, char *result, size_t max_result_len) {
-    if (strcmp(request, "/forward") == 0) {
+    // === HOMEPAGE ===
+    if (strcmp(request, "/") == 0 || strcmp(request, "/index") == 0) {
+        return snprintf(result, max_result_len, "%s", HOME_PAGE);
+    }
+
+    // === ROBOT CONTROLS ===
+    if (strncmp(request, "/forward", 8) == 0) {
         forward();
-        return snprintf(result, max_result_len,
-            "<html><body><h1>Moving Forward</h1><a href=\"/\">Back</a></body></html>");
+        return snprintf(result, max_result_len, "%s", HOME_PAGE);
     }
 
-    if (strcmp(request, "/backward") == 0) {
+    if (strncmp(request, "/backward", 9) == 0) {
         backward();
-        return snprintf(result, max_result_len,
-            "<html><body><h1>Moving Backward</h1><a href=\"/\">Back</a></body></html>");
+        return snprintf(result, max_result_len, "%s", HOME_PAGE);
     }
 
-    if (strcmp(request, "/left") == 0) {
+    if (strncmp(request, "/left", 5) == 0) {
         left();
-        return snprintf(result, max_result_len,
-            "<html><body><h1>Turning Left</h1><a href=\"/\">Back</a></body></html>");
+        return snprintf(result, max_result_len, "%s", HOME_PAGE);
     }
 
-    if (strcmp(request, "/right") == 0) {
+    if (strncmp(request, "/right", 6) == 0) {
         right();
-        return snprintf(result, max_result_len,
-            "<html><body><h1>Turning Right</h1><a href=\"/\">Back</a></body></html>");
+        return snprintf(result, max_result_len, "%s", HOME_PAGE);
     }
-    
-    // Toggle LED
-    int len = 0;
+
+
+    // === LED TEST (KEPT FOR DEBUGGING) ===
     if (strncmp(request, LED_TEST, sizeof(LED_TEST) - 1) == 0) {
-        // Get the state of the led
         bool value;
         cyw43_gpio_get(&cyw43_state, LED_GPIO, &value);
         int led_state = value;
 
-        // See if the user changed it
         if (params) {
             int led_param = sscanf(params, LED_PARAM, &led_state);
             if (led_param == 1) {
-                if (led_state) {
-                    // Turn led on
-                    cyw43_gpio_set(&cyw43_state, LED_GPIO, true);
-                } else {
-                    // Turn led off
-                    cyw43_gpio_set(&cyw43_state, LED_GPIO, false);
-                }
+                cyw43_gpio_set(&cyw43_state, LED_GPIO, led_state);
             }
         }
-        // Generate result
-        if (led_state) {
-            len = snprintf(result, max_result_len, LED_TEST_BODY, "ON", 0, "OFF");
-        } else {
-            len = snprintf(result, max_result_len, LED_TEST_BODY, "OFF", 1, "ON");
-        }
+
+        return snprintf(result, max_result_len, LED_TEST_BODY,
+                        led_state ? "ON" : "OFF",
+                        led_state ? 0 : 1,
+                        led_state ? "OFF" : "ON");
     }
-    return len;
+
+    // === DEFAULT FALLBACK (UNKNOWN ROUTE) ===
+    return snprintf(result, max_result_len,
+        "<html><body><h1>Unknown Command</h1><a href=\"/\">Back</a></body></html>");
 }
 
 err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) {
