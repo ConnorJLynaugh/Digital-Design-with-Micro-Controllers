@@ -31,6 +31,8 @@ add_executable(QUADRAPED_WIFI
     main.c
     movement_library.c
     pca9685.c
+    tfluna_i2c.c
+    mlx90614.c
     # Wifi
     wifi.c
     dhcpserver/dhcpserver.c
