@@ -8,6 +8,7 @@
 #include "movement_library.h"
 
 #include "wifi.h"
+#include "pico/cyw43_arch.h"
 
 // I2C configuration
 #define I2C_PORT i2c0
@@ -51,10 +52,12 @@ int main(void) {
     sleep_ms(2000);
 
     ////////////////// WIFI //////////////////
-    if (!wifi_ap_start("quadraped_ap", "password")) {
+    if (!wifi_ap_start("quadruped_ap", "password")) {
         printf("Failed to start WiFi AP\n");
     } else {
-        printf("WiFi AP started: SSID=quadraped_ap, password=password\n");
+        printf("WiFi AP started successfully\n");
+        // Keep onboard LED on while the Pico W is running
+        cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
     }
     ////////////////// WIFI END //////////////////
     

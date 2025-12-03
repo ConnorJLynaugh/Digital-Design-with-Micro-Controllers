@@ -1,20 +1,15 @@
 /**
- * Copyright (c) 2022 Raspberry Pi (Trading) Ltd.
- *
- * SPDX-License-Identifier: BSD-3-Clause
+ * Improved WiFi AP Control for Quadruped Robot
+ * Fixes and enhancements for better stability and UX
  */
 
 #include <string.h>
-
 #include "wifi.h"
 #include "movement_library.h"
-
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
-
 #include "lwip/pbuf.h"
 #include "lwip/tcp.h"
-
 #include "dhcpserver.h"
 #include "dnsserver.h"
 
@@ -22,28 +17,83 @@
 #define DEBUG_printf printf
 #define POLL_TIME_S 5
 #define HTTP_GET "GET"
-#define HTTP_RESPONSE_HEADERS "HTTP/1.1 %d OK\nContent-Length: %d\nContent-Type: text/html; charset=utf-8\nConnection: close\n\n"
-#define LED_TEST_BODY "<html><body><h1>Hello from Pico.</h1><p>Led is %s</p><p><a href=\"?led=%d\">Turn led %s</a></body></html>"
-#define LED_PARAM "led=%d"
-#define LED_TEST "/ledtest"
+#define HTTP_RESPONSE_HEADERS "HTTP/1.1 %d OK\nContent-Length: %d\nContent-Type: text/html; charset=utf-8\nConnection: close\nCache-Control: no-cache\n\n"
+#define HTTP_RESPONSE_REDIRECT "HTTP/1.1 302 Redirect\nLocation: http://%s/\n\n"
 #define LED_GPIO 0
-#define HTTP_RESPONSE_REDIRECT "HTTP/1.1 302 Redirect\nLocation: http://%s" LED_TEST "\n\n"
 
 typedef struct TCP_SERVER_T_ {
     struct tcp_pcb *server_pcb;
     bool complete;
     ip_addr_t gw;
+    uint32_t command_count;  // Track commands executed
 } TCP_SERVER_T;
 
 typedef struct TCP_CONNECT_STATE_T_ {
     struct tcp_pcb *pcb;
     int sent_len;
     char headers[128];
-    char result[256];
+    char result[4096];
     int header_len;
     int result_len;
     ip_addr_t *gw;
 } TCP_CONNECT_STATE_T;
+
+static TCP_SERVER_T g_tcp_state;
+static dhcp_server_t g_dhcp_server;
+static dns_server_t g_dns_server;
+
+// Queue incoming commands so they run outside lwIP callbacks
+typedef enum {
+    CMD_NONE = 0,
+    CMD_FORWARD,
+    CMD_BACKWARD,
+    CMD_LEFT,
+    CMD_RIGHT,
+    CMD_CCW,
+    CMD_CW,
+    CMD_CREEP_FWD,
+    CMD_CREEP_BWD,
+    CMD_HI,
+    CMD_SHUFFLE,
+    CMD_HUMPING,
+    CMD_SQUADS,
+    CMD_SIT,
+    CMD_STANDUP,
+    CMD_LEGS_UP,
+    CMD_XPOSITION,
+    CMD_SHIFT1,
+    CMD_SHIFT2,
+    CMD_SHIFT3,
+    CMD_SHIFT4,
+} command_t;
+
+#define CMD_QUEUE_SIZE 16
+static command_t g_cmd_queue[CMD_QUEUE_SIZE];
+static uint8_t g_cmd_head = 0;
+static uint8_t g_cmd_tail = 0;
+
+static bool enqueue_command(command_t cmd) {
+    uint8_t next_tail = (g_cmd_tail + 1) % CMD_QUEUE_SIZE;
+    if (next_tail == g_cmd_head) {
+        return false; // queue full
+    }
+    g_cmd_queue[g_cmd_tail] = cmd;
+    g_cmd_tail = next_tail;
+    return true;
+}
+
+static command_t dequeue_command(void) {
+    if (g_cmd_head == g_cmd_tail) {
+        return CMD_NONE;
+    }
+    command_t cmd = g_cmd_queue[g_cmd_head];
+    g_cmd_head = (g_cmd_head + 1) % CMD_QUEUE_SIZE;
+    return cmd;
+}
+
+// ============================================================================
+// Connection Management
+// ============================================================================
 
 static err_t tcp_close_client_connection(TCP_CONNECT_STATE_T *con_state, struct tcp_pcb *client_pcb, err_t close_err) {
     if (client_pcb) {
@@ -74,197 +124,257 @@ static void tcp_server_close(TCP_SERVER_T *state) {
     }
 }
 
+// ============================================================================
+// Enhanced Web Interface with Better UX
+// ============================================================================
+
+static const char HOME_PAGE[] =
+"<html><head>"
+"<meta name='viewport' content='width=device-width,initial-scale=1'>"
+"<style>"
+"body{background:#0b1117;color:#e8eef4;font-family:'Segoe UI',sans-serif;margin:0;padding:20px;}"
+".wrap{max-width:760px;margin:0 auto;}"
+"h1{margin:0 0 16px;font-size:28px;color:#7bd7ff;}"
+".card{background:#111824;border:1px solid #1e2a38;border-radius:14px;padding:16px;margin-bottom:16px;box-shadow:0 10px 30px rgba(0,0,0,.35);}"
+".card h2{margin:0 0 12px;font-size:18px;color:#9ad2ff;}"
+".dpad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;align-items:stretch;}"
+".actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;}"
+".poses{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;}"
+"button{background:#1e2b39;color:#e8eef4;border:1px solid #2f3d52;border-radius:10px;font-size:17px;font-weight:600;padding:16px;cursor:pointer;transition:transform .05s ease,background .15s ease;}"
+"button:active{background:#304357;transform:translateY(1px);}"
+".sm{font-size:15px;padding:12px 14px;}"
+"</style>"
+"</head><body>"
+"<div class='wrap'>"
+"<h1>Quadruped Control</h1>"
+"<div class='card'>"
+"<h2>Movement</h2>"
+"<div class='dpad'>"
+"<div></div><button onclick=\"c('forward')\">&#9650;</button><div></div>"
+"<button onclick=\"c('left')\">&#9664;</button><div></div><button onclick=\"c('right')\">&#9654;</button>"
+"<div></div><button onclick=\"c('backward')\">&#9660;</button><div></div>"
+"</div>"
+"<div class='actions'>"
+"<button onclick=\"c('ccw')\">Rotate CCW</button>"
+"<button onclick=\"c('cw')\">Rotate CW</button>"
+"<button onclick=\"c('creep_forward')\">Creep Forward</button>"
+"<button onclick=\"c('creep_backward')\">Creep Backward</button>"
+"</div>"
+"</div>"
+"<div class='card'>"
+"<h2>Poses & Tricks</h2>"
+"<div class='poses'>"
+"<button onclick=\"c('hi')\">Hi</button>"
+"<button onclick=\"c('shuffle')\">Shuffle</button>"
+"<button onclick=\"c('humping')\">Humping</button>"
+"<button onclick=\"c('squads')\">Squads</button>"
+"<button onclick=\"c('sit')\">Sit</button>"
+"<button onclick=\"c('standup')\">Stand Up</button>"
+"<button onclick=\"c('legs_up')\">Legs Up</button>"
+"<button onclick=\"c('xposition')\">Neutral X</button>"
+"<button onclick=\"c('shift1')\">Shift 1</button>"
+"<button onclick=\"c('shift2')\">Shift 2</button>"
+"<button onclick=\"c('shift3')\">Shift 3</button>"
+"<button onclick=\"c('shift4')\">Shift 4</button>"
+"</div>"
+"</div>"
+"<div class='card'>"
+"<h2>LED</h2>"
+"<div class='actions'>"
+"<button class='sm' onclick=\"l(1)\">LED On</button>"
+"<button class='sm' onclick=\"l(0)\">LED Off</button>"
+"</div>"
+"</div>"
+"</div>"
+"<script>"
+"function c(d){fetch('/cmd?dir='+d).catch(()=>{});}"
+"function l(v){fetch('/led?state='+v).catch(()=>{});}"
+"</script>"
+"</body></html>";
+
+// ============================================================================
+// Request Handler
+// ============================================================================
+
+static int test_server_content(const char *request, const char *params, char *result, size_t max_result_len) {
+    
+    // iOS Captive Portal Detection - serve FULL control page
+    // This makes iOS show the captive portal popup with our interface
+    if (strcmp(request, "/hotspot-detect.html") == 0) {
+        return snprintf(result, max_result_len, "%s", HOME_PAGE);
+    }
+    
+    // Android Captive Portal Detection
+    if (strcmp(request, "/generate_204") == 0) {
+        // Return empty response with 204 status (handled differently below)
+        return -1; // Special flag for 204 No Content
+    }
+    
+    // Other captive portal checks - serve home page
+    if (strcmp(request, "/connecttest.txt") == 0 ||
+        strcmp(request, "/success.txt") == 0 ||
+        strcmp(request, "/ncsi.txt") == 0 ||
+        strcmp(request, "/connect") == 0) {
+        // Serve the full home page
+        return snprintf(result, max_result_len, "%s", HOME_PAGE);
+    }
+    
+    // Serve Control UI
+    if (strcmp(request, "/") == 0 || strcmp(request, "/index") == 0 ||
+        strcmp(request, "/index.html") == 0) {
+        return snprintf(result, max_result_len, "%s", HOME_PAGE);
+    }
+    
+    // Handle favicon request (prevents "Unknown command" error)
+    if (strcmp(request, "/favicon.ico") == 0) {
+        return 0; // Just redirect, we don't have a favicon
+    }
+
+    // Movement Commands with feedback
+    if (strncmp(request, "/cmd", 4) == 0) {
+        char dir[32] = {0};
+        const char *response = "Unknown command";
+        
+        if (params && sscanf(params, "dir=%31s", dir) == 1) {
+            DEBUG_printf("Command: %s\n", dir);
+
+            command_t cmd = CMD_NONE;
+            if (strcmp(dir, "forward") == 0) cmd = CMD_FORWARD;
+            else if (strcmp(dir, "backward") == 0) cmd = CMD_BACKWARD;
+            else if (strcmp(dir, "left") == 0) cmd = CMD_LEFT;
+            else if (strcmp(dir, "right") == 0) cmd = CMD_RIGHT;
+            else if (strcmp(dir, "ccw") == 0) cmd = CMD_CCW;
+            else if (strcmp(dir, "cw") == 0) cmd = CMD_CW;
+            else if (strcmp(dir, "creep_forward") == 0) cmd = CMD_CREEP_FWD;
+            else if (strcmp(dir, "creep_backward") == 0) cmd = CMD_CREEP_BWD;
+            else if (strcmp(dir, "hi") == 0) cmd = CMD_HI;
+            else if (strcmp(dir, "shuffle") == 0) cmd = CMD_SHUFFLE;
+            else if (strcmp(dir, "humping") == 0) cmd = CMD_HUMPING;
+            else if (strcmp(dir, "squads") == 0) cmd = CMD_SQUADS;
+            else if (strcmp(dir, "sit") == 0) cmd = CMD_SIT;
+            else if (strcmp(dir, "standup") == 0) cmd = CMD_STANDUP;
+            else if (strcmp(dir, "legs_up") == 0) cmd = CMD_LEGS_UP;
+            else if (strcmp(dir, "xposition") == 0) cmd = CMD_XPOSITION;
+            else if (strcmp(dir, "shift1") == 0) cmd = CMD_SHIFT1;
+            else if (strcmp(dir, "shift2") == 0) cmd = CMD_SHIFT2;
+            else if (strcmp(dir, "shift3") == 0) cmd = CMD_SHIFT3;
+            else if (strcmp(dir, "shift4") == 0) cmd = CMD_SHIFT4;
+
+            if (cmd != CMD_NONE) {
+                if (enqueue_command(cmd)) {
+                    response = "Command queued";
+                } else {
+                    response = "Command queue full, try again";
+                }
+            }
+            
+            g_tcp_state.command_count++;
+        }
+        
+        return snprintf(result, max_result_len, "%s", response);
+    }
+
+    // LED Control
+    if (strncmp(request, "/led", 4) == 0) {
+        int led_state = 0;
+        
+        if (params && sscanf(params, "state=%d", &led_state) == 1) {
+            cyw43_gpio_set(&cyw43_state, LED_GPIO, led_state);
+            DEBUG_printf("LED: %d\n", led_state);
+            return snprintf(result, max_result_len, "LED %s", led_state ? "ON" : "OFF");
+        }
+        return snprintf(result, max_result_len, "Invalid LED state");
+    }
+
+    // Unknown - redirect to home
+    return 0;
+}
+
+// ============================================================================
+// TCP Server Callbacks
+// ============================================================================
+
 static err_t tcp_server_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
     TCP_CONNECT_STATE_T *con_state = (TCP_CONNECT_STATE_T*)arg;
-    DEBUG_printf("tcp_server_sent %u\n", len);
     con_state->sent_len += len;
     if (con_state->sent_len >= con_state->header_len + con_state->result_len) {
-        DEBUG_printf("all done\n");
         return tcp_close_client_connection(con_state, pcb, ERR_OK);
     }
     return ERR_OK;
 }
 
-static const char HOME_PAGE[] =
-"<html><head>"
-"<meta name='viewport' content='width=device-width, initial-scale=1.0'>"
-"<style>"
-"body { background:#111; color:white; font-family:sans-serif; text-align:center; margin:0; }"
-"#joystick-bg { width:300px; height:300px; background:#222; border-radius:50%; margin:100px auto; position:relative; touch-action:none; }"
-"#joystick { width:120px; height:120px; background:#555; border-radius:50%; position:absolute; left:90px; top:90px; transition:0.05s; }"
-"h1 { margin-top:40px; }"
-"</style>"
-"</head><body>"
-"<h1>Quadruped Joystick Control</h1>"
-"<div id='joystick-bg'><div id='joystick'></div></div>"
-
-"<script>"
-"const joy=document.getElementById('joystick');"
-"const bg=document.getElementById('joystick-bg');"
-"let center={x:bg.offsetWidth/2,y:bg.offsetHeight/2};"
-"let maxDist=bg.offsetWidth/2;"
-
-"function send(dir,spd){ fetch(`/cmd?dir=${dir}&spd=${spd}`).catch(()=>{}); }"
-
-"bg.addEventListener('touchmove',e=>{"
-" let rect=bg.getBoundingClientRect();"
-" let x=e.touches[0].clientX-rect.left;"
-" let y=e.touches[0].clientY-rect.top;"
-" let dx=x-center.x; let dy=y-center.y;"
-" let dist=Math.sqrt(dx*dx+dy*dy);"
-" if(dist>maxDist){ dx*=maxDist/dist; dy*=maxDist/dist; }"
-" joy.style.left=(center.x+dx-joy.offsetWidth/2)+'px';"
-" joy.style.top=(center.y+dy-joy.offsetHeight/2)+'px';"
-" let angle=Math.atan2(dy,dx);"
-" let spd=Math.min(1.0, dist/maxDist).toFixed(2);"
-" let dir=angleToDir(angle);"
-" send(dir,spd);"
-"});"
-
-"bg.addEventListener('touchend',e=>{"
-" joy.style.left=center.x-joy.offsetWidth/2+'px';"
-" joy.style.top=center.y-joy.offsetHeight/2+'px';"
-"});"
-
-"function angleToDir(a){"
-" if(a>-0.78 && a<0.78) return 'right';"
-" if(a>=0.78 && a<=2.35) return 'forward';"
-" if(a<=-0.78 && a>=-2.35) return 'backward';"
-" return 'left';"
-"}"
-"</script>"
-
-"</body></html>";
-
-static int test_server_content(const char *request, const char *params, char *result, size_t max_result_len) {
-
-    // === Serve Joystick UI ===
-    if (strcmp(request, "/") == 0 || strcmp(request, "/index") == 0) {
-        return snprintf(result, max_result_len, "%s", HOME_PAGE);
-    }
-
-    // === Joystick Commands ===
-    // Example: /cmd?dir=forward&spd=0.60
-    if (strncmp(request, "/cmd", 4) == 0) {
-        char dir[32] = {0};
-        float spd = 0.0f;
-
-        if (params) {
-            sscanf(params, "dir=%31[^&]&spd=%f", dir, &spd);
-
-            if (strcmp(dir, "forward") == 0) {
-                forward();   // one cycle movement
-            } 
-            else if (strcmp(dir, "backward") == 0) {
-                backward();
-            } 
-            else if (strcmp(dir, "left") == 0) {
-                left();
-            } 
-            else if (strcmp(dir, "right") == 0) {
-                right();
-            }
-        }
-
-        return snprintf(result, max_result_len, "OK");
-    }
-
-    // === Optional: LED demo still supported ===
-    if (strncmp(request, LED_TEST, sizeof(LED_TEST) - 1) == 0) {
-        bool value;
-        cyw43_gpio_get(&cyw43_state, LED_GPIO, &value);
-        int led_state = value;
-
-        if (params) {
-            int led_param = sscanf(params, LED_PARAM, &led_state);
-            if (led_param == 1) {
-                cyw43_gpio_set(&cyw43_state, LED_GPIO, led_state);
-            }
-        }
-
-        return snprintf(result, max_result_len, LED_TEST_BODY,
-                        led_state ? "ON" : "OFF",
-                        led_state ? 0 : 1,
-                        led_state ? "OFF" : "ON");
-    }
-
-    // === Unknown URL ===
-    return snprintf(result, max_result_len,
-        "<html><body><h1>Unknown Command</h1><a href=\"/\">Back</a></body></html>");
-}
-
 err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) {
     TCP_CONNECT_STATE_T *con_state = (TCP_CONNECT_STATE_T*)arg;
     if (!p) {
-        DEBUG_printf("connection closed\n");
         return tcp_close_client_connection(con_state, pcb, ERR_OK);
     }
+    
     assert(con_state && con_state->pcb == pcb);
+    
     if (p->tot_len > 0) {
-        DEBUG_printf("tcp_server_recv %d err %d\n", p->tot_len, err);
-#if 0
-        for (struct pbuf *q = p; q != NULL; q = q->next) {
-            DEBUG_printf("in: %.*s\n", q->len, q->payload);
-        }
-#endif
-        // Copy the request into the buffer
-        pbuf_copy_partial(p, con_state->headers, p->tot_len > sizeof(con_state->headers) - 1 ? sizeof(con_state->headers) - 1 : p->tot_len, 0);
+        // Copy request into buffer
+        pbuf_copy_partial(p, con_state->headers, 
+                         p->tot_len > sizeof(con_state->headers) - 1 ? 
+                         sizeof(con_state->headers) - 1 : p->tot_len, 0);
 
         // Handle GET request
         if (strncmp(HTTP_GET, con_state->headers, sizeof(HTTP_GET) - 1) == 0) {
-            char *request = con_state->headers + sizeof(HTTP_GET); // + space
+            char *request = con_state->headers + sizeof(HTTP_GET);
             char *params = strchr(request, '?');
+            
             if (params) {
-                if (*params) {
-                    char *space = strchr(request, ' ');
-                    *params++ = 0;
-                    if (space) {
-                        *space = 0;
-                    }
-                } else {
-                    params = NULL;
-                }
+                *params++ = 0;
+                char *space = strchr(params, ' ');
+                if (space) *space = 0;
+            } else {
+                char *space = strchr(request, ' ');
+                if (space) *space = 0;
             }
 
             // Generate content
-            con_state->result_len = test_server_content(request, params, con_state->result, sizeof(con_state->result));
-            DEBUG_printf("Request: %s?%s\n", request, params);
-            DEBUG_printf("Result: %d\n", con_state->result_len);
+            con_state->result_len = test_server_content(request, params, 
+                                                        con_state->result, 
+                                                        sizeof(con_state->result));
 
-            // Check we had enough buffer space
+            // Check buffer space
             if (con_state->result_len > sizeof(con_state->result) - 1) {
-                DEBUG_printf("Too much result data %d\n", con_state->result_len);
+                DEBUG_printf("Result too large: %d\n", con_state->result_len);
                 return tcp_close_client_connection(con_state, pcb, ERR_CLSD);
             }
 
-            // Generate web page
-            if (con_state->result_len > 0) {
-                con_state->header_len = snprintf(con_state->headers, sizeof(con_state->headers), HTTP_RESPONSE_HEADERS,
-                    200, con_state->result_len);
-                if (con_state->header_len > sizeof(con_state->headers) - 1) {
-                    DEBUG_printf("Too much header data %d\n", con_state->header_len);
-                    return tcp_close_client_connection(con_state, pcb, ERR_CLSD);
-                }
+            // Generate response
+            if (con_state->result_len == -1) {
+                // Special case: 204 No Content for Android captive portal
+                con_state->header_len = snprintf(con_state->headers, 
+                                                sizeof(con_state->headers), 
+                                                "HTTP/1.1 204 No Content\r\n\r\n");
+                con_state->result_len = 0;
+            } else if (con_state->result_len > 0) {
+                con_state->header_len = snprintf(con_state->headers, 
+                                                sizeof(con_state->headers), 
+                                                HTTP_RESPONSE_HEADERS,
+                                                200, con_state->result_len);
             } else {
-                // Send redirect
-                con_state->header_len = snprintf(con_state->headers, sizeof(con_state->headers), HTTP_RESPONSE_REDIRECT,
-                    ipaddr_ntoa(con_state->gw));
-                DEBUG_printf("Sending redirect %s", con_state->headers);
+                // Redirect to home page
+                con_state->header_len = snprintf(con_state->headers, 
+                                                sizeof(con_state->headers), 
+                                                HTTP_RESPONSE_REDIRECT,
+                                                ipaddr_ntoa(con_state->gw));
             }
 
-            // Send the headers to the client
+            // Send headers
             con_state->sent_len = 0;
             err_t err = tcp_write(pcb, con_state->headers, con_state->header_len, 0);
             if (err != ERR_OK) {
-                DEBUG_printf("failed to write header data %d\n", err);
+                DEBUG_printf("Header write failed: %d\n", err);
                 return tcp_close_client_connection(con_state, pcb, err);
             }
 
-            // Send the body to the client
+            // Send body
             if (con_state->result_len) {
                 err = tcp_write(pcb, con_state->result, con_state->result_len, 0);
                 if (err != ERR_OK) {
-                    DEBUG_printf("failed to write result data %d\n", err);
+                    DEBUG_printf("Body write failed: %d\n", err);
                     return tcp_close_client_connection(con_state, pcb, err);
                 }
             }
@@ -277,14 +387,13 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
 
 static err_t tcp_server_poll(void *arg, struct tcp_pcb *pcb) {
     TCP_CONNECT_STATE_T *con_state = (TCP_CONNECT_STATE_T*)arg;
-    DEBUG_printf("tcp_server_poll_fn\n");
-    return tcp_close_client_connection(con_state, pcb, ERR_OK); // Just disconnect clent?
+    return tcp_close_client_connection(con_state, pcb, ERR_OK);
 }
 
 static void tcp_server_err(void *arg, err_t err) {
     TCP_CONNECT_STATE_T *con_state = (TCP_CONNECT_STATE_T*)arg;
     if (err != ERR_ABRT) {
-        DEBUG_printf("tcp_client_err_fn %d\n", err);
+        DEBUG_printf("TCP error: %d\n", err);
         tcp_close_client_connection(con_state, con_state->pcb, err);
     }
 }
@@ -292,21 +401,21 @@ static void tcp_server_err(void *arg, err_t err) {
 static err_t tcp_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err) {
     TCP_SERVER_T *state = (TCP_SERVER_T*)arg;
     if (err != ERR_OK || client_pcb == NULL) {
-        DEBUG_printf("failure in accept\n");
+        DEBUG_printf("Accept failed\n");
         return ERR_VAL;
     }
-    DEBUG_printf("client connected\n");
 
-    // Create the state for the connection
+    // Allocate connection state
     TCP_CONNECT_STATE_T *con_state = calloc(1, sizeof(TCP_CONNECT_STATE_T));
     if (!con_state) {
-        DEBUG_printf("failed to allocate connect state\n");
+        DEBUG_printf("Out of memory\n");
         return ERR_MEM;
     }
-    con_state->pcb = client_pcb; // for checking
+    
+    con_state->pcb = client_pcb;
     con_state->gw = &state->gw;
 
-    // setup connection to client
+    // Setup callbacks
     tcp_arg(client_pcb, con_state);
     tcp_sent(client_pcb, tcp_server_sent);
     tcp_recv(client_pcb, tcp_server_recv);
@@ -318,94 +427,105 @@ static err_t tcp_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err)
 
 static bool tcp_server_open(void *arg, const char *ap_name) {
     TCP_SERVER_T *state = (TCP_SERVER_T*)arg;
-    DEBUG_printf("starting server on port %d\n", TCP_PORT);
 
     struct tcp_pcb *pcb = tcp_new_ip_type(IPADDR_TYPE_ANY);
     if (!pcb) {
-        DEBUG_printf("failed to create pcb\n");
+        DEBUG_printf("Failed to create PCB\n");
         return false;
     }
 
     err_t err = tcp_bind(pcb, IP_ANY_TYPE, TCP_PORT);
     if (err) {
-        DEBUG_printf("failed to bind to port %d\n",TCP_PORT);
+        DEBUG_printf("Failed to bind port %d\n", TCP_PORT);
         return false;
     }
 
     state->server_pcb = tcp_listen_with_backlog(pcb, 1);
     if (!state->server_pcb) {
-        DEBUG_printf("failed to listen\n");
-        if (pcb) {
-            tcp_close(pcb);
-        }
+        DEBUG_printf("Failed to listen\n");
+        if (pcb) tcp_close(pcb);
         return false;
     }
 
     tcp_arg(state->server_pcb, state);
     tcp_accept(state->server_pcb, tcp_server_accept);
 
-    printf("Try connecting to '%s' (press 'd' to disable access point)\n", ap_name);
+    printf("WiFi AP ready: '%s'\n", ap_name);
+    printf("Connect and navigate to: http://%s\n", ipaddr_ntoa(&state->gw));
     return true;
 }
 
-void key_pressed_func(void *param) {
-    assert(param);
-    TCP_SERVER_T *state = (TCP_SERVER_T*)param;
-    int key = getchar_timeout_us(0); // get any pending key press but don't wait
-    if (key == 'd' || key == 'D') {
-        cyw43_arch_lwip_begin();
-        cyw43_arch_disable_ap_mode();
-        cyw43_arch_lwip_end();
-        state->complete = true;
-    }
-}
-
-static TCP_SERVER_T g_tcp_state;
-static dhcp_server_t g_dhcp_server;
-static dns_server_t g_dns_server;
+// ============================================================================
+// Public API
+// ============================================================================
 
 bool wifi_ap_start(const char *ap_name, const char *password) {
-    // Initialise CYW43 / WiFi
     if (cyw43_arch_init()) {
-        DEBUG_printf("failed to initialise cyw43\n");
+        DEBUG_printf("CYW43 init failed\n");
         return false;
     }
 
-    // Enable AP mode
     cyw43_arch_enable_ap_mode(ap_name, password, CYW43_AUTH_WPA2_AES_PSK);
 
-#if LWIP_IPV6
-#define IP(x) ((x).u_addr.ip4)
-#else
-#define IP(x) (x)
-#endif
-
-    // Set gateway and mask like in your original main()
+    // Configure network
     ip4_addr_t mask;
     memset(&g_tcp_state, 0, sizeof(g_tcp_state));
-    IP(g_tcp_state.gw).addr = PP_HTONL(CYW43_DEFAULT_IP_AP_ADDRESS);
-    IP(mask).addr           = PP_HTONL(CYW43_DEFAULT_IP_MASK);
+    
+#if LWIP_IPV6
+    g_tcp_state.gw.u_addr.ip4.addr = PP_HTONL(CYW43_DEFAULT_IP_AP_ADDRESS);
+    mask.addr = PP_HTONL(CYW43_DEFAULT_IP_MASK);
+#else
+    g_tcp_state.gw.addr = PP_HTONL(CYW43_DEFAULT_IP_AP_ADDRESS);
+    mask.addr = PP_HTONL(CYW43_DEFAULT_IP_MASK);
+#endif
 
-#undef IP
-
-    // Start DHCP and DNS servers
+    // Start services
     dhcp_server_init(&g_dhcp_server, &g_tcp_state.gw, &mask);
     dns_server_init(&g_dns_server, &g_tcp_state.gw);
 
-    // Start TCP HTTP server
     if (!tcp_server_open(&g_tcp_state, ap_name)) {
-        DEBUG_printf("failed to open TCP server\n");
+        DEBUG_printf("TCP server failed\n");
         return false;
     }
 
-    DEBUG_printf("WiFi AP started\n");
     return true;
 }
 
 void wifi_ap_background(void) {
 #if PICO_CYW43_ARCH_POLL
     cyw43_arch_poll();
-    cyw43_arch_wait_for_work_until(make_timeout_time_ms(10));
+    cyw43_arch_wait_for_work_until(make_timeout_time_ms(1));
 #endif
+
+    // Execute one queued command per call to avoid blocking networking callbacks
+    command_t cmd = dequeue_command();
+    switch (cmd) {
+        case CMD_FORWARD:      forward(); break;
+        case CMD_BACKWARD:     backward(); break;
+        case CMD_LEFT:         left(); break;
+        case CMD_RIGHT:        right(); break;
+        case CMD_CCW:          ccw(); break;
+        case CMD_CW:           cw(); break;
+        case CMD_CREEP_FWD:    c_f(); break;
+        case CMD_CREEP_BWD:    c_b(); break;
+        case CMD_HI:           hi(); break;
+        case CMD_SHUFFLE:      shuffle(); break;
+        case CMD_HUMPING:      humping(); break;
+        case CMD_SQUADS:       squads(); break;
+        case CMD_SIT:          sit(); break;
+        case CMD_STANDUP:      stand_up(); break;
+        case CMD_LEGS_UP:      legs_up(); break;
+        case CMD_XPOSITION:    xposition(); break;
+        case CMD_SHIFT1:       shift_to(1); break;
+        case CMD_SHIFT2:       shift_to(2); break;
+        case CMD_SHIFT3:       shift_to(3); break;
+        case CMD_SHIFT4:       shift_to(4); break;
+        default: break;
+    }
 }
 
+void wifi_ap_stop(void) {
+    tcp_server_close(&g_tcp_state);
+    cyw43_arch_disable_ap_mode();
+    cyw43_arch_deinit();
+}
