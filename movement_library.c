@@ -2,6 +2,23 @@
 #include <math.h>
 #include <stdlib.h>
 
+// Allow main firmware to provide background processing during blocking waits
+__attribute__((weak)) void robot_background_tick(void) {}
+
+#ifndef MOVEMENT_SLEEP_STEP_MS
+#define MOVEMENT_SLEEP_STEP_MS 10
+#endif
+
+// Cooperative sleep that periodically runs background tasks (e.g., heading update)
+static void coop_sleep_ms(uint32_t ms) {
+    uint32_t remaining = ms;
+    while (remaining > 0) {
+        uint32_t chunk = remaining > MOVEMENT_SLEEP_STEP_MS ? MOVEMENT_SLEEP_STEP_MS : remaining;
+        sleep_ms(chunk);
+        robot_background_tick();
+        remaining -= chunk;
+    }
+}
 
 PCA9685 pwm;
 
@@ -102,55 +119,55 @@ void calfs(int angle) {
 
 // Basic position functions
 void legs_up(void) {
-    sleep_ms(1000);
+    coop_sleep_ms(1000);
     joints(90);
-    sleep_ms(1000);
+    coop_sleep_ms(1000);
     thighs(180);
     calfs(180);
-    sleep_ms(1000);
+    coop_sleep_ms(1000);
 }
 
 void setup_servos(void) {
     printf("Assemble the servo horns\n");
-    sleep_ms(1000);
+    coop_sleep_ms(1000);
     joints(90);
-    sleep_ms(1000);
+    coop_sleep_ms(1000);
     thighs(90);
-    sleep_ms(1000);
+    coop_sleep_ms(1000);
     calfs(180);
-    sleep_ms(1000);
+    coop_sleep_ms(1000);
 }
 
 void sit(void) {
     thighs(140);
-    sleep_ms(500);
+    coop_sleep_ms(500);
     thighs(150);
-    sleep_ms(500);
+    coop_sleep_ms(500);
     thighs(160);
     calfs(30);  // legs touching the ground
-    sleep_ms(500);
+    coop_sleep_ms(500);
     thighs(170);
-    sleep_ms(1000);
+    coop_sleep_ms(1000);
 }
 
 void stand_up(void) {
     //legs_up();
     
     calfs(30);  // legs touching the ground
-    sleep_ms(1000);
+    coop_sleep_ms(1000);
     thighs(170);
-    sleep_ms(2000);
+    coop_sleep_ms(2000);
     
     thighs(135);  // lift up the body
     calfs(35);
 }
 
 void xposition(void) {
-    sleep_ms(200);
+    coop_sleep_ms(200);
     joints(90);
     thighs(135);
     calfs(35);
-    sleep_ms(200);
+    coop_sleep_ms(200);
 }
 
 void shift_to(int p) {
@@ -163,7 +180,7 @@ void shift_to(int p) {
             thigh_2(120);
             joint_2(120);
             joint_4(50);
-            sleep_ms(1000);
+            coop_sleep_ms(1000);
             break;
             
         case 2:
@@ -172,7 +189,7 @@ void shift_to(int p) {
             thigh_1(120);
             joint_1(120);
             joint_3(50);
-            sleep_ms(1000);
+            coop_sleep_ms(1000);
             break;
             
         case 3:
@@ -181,7 +198,7 @@ void shift_to(int p) {
             thigh_4(120);
             joint_4(120);
             joint_2(50);
-            sleep_ms(1000);
+            coop_sleep_ms(1000);
             break;
             
         case 4:
@@ -190,7 +207,7 @@ void shift_to(int p) {
             thigh_3(120);
             joint_3(120);
             joint_1(50);
-            sleep_ms(1000);
+            coop_sleep_ms(1000);
             break;
             
         default:
@@ -208,27 +225,27 @@ void forward(void) {
     thigh_3(160);
     joint_1(90);
     joint_3(90);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     joint_2(120);
     joint_4(60);
-    sleep_ms(200);
+    coop_sleep_ms(200);
     thigh_1(135);
     thigh_3(135);
     
-    sleep_ms(100);
+    coop_sleep_ms(100);
     
     thigh_2(160);
     thigh_4(160);
     joint_2(90);
     joint_4(90);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     joint_1(120);
     joint_3(60);
-    sleep_ms(200);
+    coop_sleep_ms(200);
     thigh_2(135);
     thigh_4(135);
     
-    sleep_ms(100);
+    coop_sleep_ms(100);
 }
 
 void backward(void) {
@@ -239,27 +256,27 @@ void backward(void) {
     thigh_3(160);
     joint_1(90);
     joint_3(90);
-    sleep_ms(200);
+    coop_sleep_ms(200);
     joint_2(60);
     joint_4(120);
-    sleep_ms(200);
+    coop_sleep_ms(200);
     thigh_1(135);
     thigh_3(135);
     
-    sleep_ms(100);
+    coop_sleep_ms(100);
     
     thigh_2(160);
     thigh_4(160);
     joint_2(90);
     joint_4(90);
-    sleep_ms(200);
+    coop_sleep_ms(200);
     joint_1(60);
     joint_3(120);
-    sleep_ms(200);
+    coop_sleep_ms(200);
     thigh_2(135);
     thigh_4(135);
     
-    sleep_ms(100);
+    coop_sleep_ms(100);
 }
 
 void ccw(void) {
@@ -270,27 +287,27 @@ void ccw(void) {
     thigh_3(160);
     joint_1(90);
     joint_3(90);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     joint_2(135);
     joint_4(135);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     thigh_1(135);
     thigh_3(135);
     
-    sleep_ms(100);
+    coop_sleep_ms(100);
     
     thigh_2(160);
     thigh_4(160);
     joint_2(90);
     joint_4(90);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     joint_1(35);
     joint_3(35);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     thigh_2(135);
     thigh_4(135);
     
-    sleep_ms(100);
+    coop_sleep_ms(100);
 }
 
 void cw(void) {
@@ -301,27 +318,27 @@ void cw(void) {
     thigh_3(160);
     joint_1(90);
     joint_3(90);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     joint_2(35);
     joint_4(35);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     thigh_1(135);
     thigh_3(135);
     
-    sleep_ms(100);
+    coop_sleep_ms(100);
     
     thigh_2(160);
     thigh_4(160);
     joint_2(90);
     joint_4(90);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     joint_1(135);
     joint_3(135);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     thigh_2(135);
     thigh_4(135);
     
-    sleep_ms(100);
+    coop_sleep_ms(100);
 }
 
 void right(void) {
@@ -332,27 +349,27 @@ void right(void) {
     thigh_3(160);
     joint_1(90);
     joint_3(90);
-    sleep_ms(200);
+    coop_sleep_ms(200);
     joint_2(50);
     joint_4(120);
-    sleep_ms(200);
+    coop_sleep_ms(200);
     thigh_1(135);
     thigh_3(135);
     
-    sleep_ms(200);
+    coop_sleep_ms(200);
     
     thigh_2(160);
     thigh_4(160);
     joint_2(90);
     joint_4(90);
-    sleep_ms(200);
+    coop_sleep_ms(200);
     joint_1(120);
     joint_3(50);
-    sleep_ms(200);
+    coop_sleep_ms(200);
     thigh_2(135);
     thigh_4(135);
     
-    sleep_ms(200);
+    coop_sleep_ms(200);
 }
 
 void left(void) {
@@ -363,27 +380,27 @@ void left(void) {
     thigh_3(160);
     joint_1(90);
     joint_3(90);
-    sleep_ms(200);
+    coop_sleep_ms(200);
     joint_2(120);
     joint_4(50);
-    sleep_ms(200);
+    coop_sleep_ms(200);
     thigh_1(135);
     thigh_3(135);
     
-    sleep_ms(200);
+    coop_sleep_ms(200);
     
     thigh_2(160);
     thigh_4(160);
     joint_2(90);
     joint_4(90);
-    sleep_ms(200);
+    coop_sleep_ms(200);
     joint_1(50);
     joint_3(120);
-    sleep_ms(200);
+    coop_sleep_ms(200);
     thigh_2(135);
     thigh_4(135);
     
-    sleep_ms(200);
+    coop_sleep_ms(200);
 }
 
 // Special actions
@@ -394,9 +411,9 @@ void hi(void) {
     thigh_3(170);
     
     for(int i = 0; i < 5; i++) {
-        sleep_ms(200);
+        coop_sleep_ms(200);
         calf_3(90);
-        sleep_ms(200);
+        coop_sleep_ms(200);
         calf_3(160);
     }
     
@@ -413,60 +430,60 @@ void shuffle(void) {
 }
 
 void humping(void) {
-    sleep_ms(100);
+    coop_sleep_ms(100);
     joints(90);
     thighs(135);
     calfs(35);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     thigh_3(160);
     thigh_4(160);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     thigh_3(135);
     thigh_4(135);
 }
 
 void squads(void) {
-    sleep_ms(100);
+    coop_sleep_ms(100);
     joints(90);
     thighs(135);
     calfs(35);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     thigh_3(160);
     thigh_4(160);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     thigh_3(135);
     thigh_4(135);
     
-    sleep_ms(100);
+    coop_sleep_ms(100);
     joints(90);
     thighs(135);
     calfs(35);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     thigh_1(160);
     thigh_2(160);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     thigh_1(135);
     thigh_2(135);
     
-    sleep_ms(100);
+    coop_sleep_ms(100);
     joints(90);
     thighs(135);
     calfs(35);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     thigh_1(160);
     thigh_4(160);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     thigh_1(135);
     thigh_4(135);
     
-    sleep_ms(100);
+    coop_sleep_ms(100);
     joints(90);
     thighs(135);
     calfs(35);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     thigh_2(160);
     thigh_3(160);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     thigh_2(135);
     thigh_3(135);
 }
@@ -506,7 +523,7 @@ void leg_position_fb(float y, int l, int s) {
                 joint_3(50);
                 break;
         }
-        sleep_ms(200);
+        coop_sleep_ms(200);
     }
     
     switch(l) {
@@ -543,44 +560,44 @@ void leg_position_fb(float y, int l, int s) {
 
 void c_f(void) {
     leg_position_fb(80.0f, 1, 0);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     leg_position_fb(31.8f, 1, 1);
     leg_position_fb(31.8f, 4, 1);
     leg_position_fb(1.0f, 2, 1);
     leg_position_fb(80.0f, 3, 1);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     leg_position_fb(1.0f, 3, 0);
     
-    sleep_ms(200);
+    coop_sleep_ms(200);
     
     leg_position_fb(80.0f, 2, 0);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     leg_position_fb(31.8f, 2, 1);
     leg_position_fb(1.0f, 1, 1);
     leg_position_fb(31.8f, 3, 1);
     leg_position_fb(80.0f, 4, 1);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     leg_position_fb(1.0f, 4, 0);
 }
 
 void c_b(void) {
     leg_position_fb(80.0f, 3, 0);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     leg_position_fb(31.8f, 2, 1);
     leg_position_fb(31.8f, 3, 1);
     leg_position_fb(1.0f, 4, 1);
     leg_position_fb(80.0f, 1, 1);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     leg_position_fb(1.0f, 1, 0);
     
-    sleep_ms(200);
+    coop_sleep_ms(200);
     
     leg_position_fb(80.0f, 4, 0);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     leg_position_fb(31.8f, 4, 1);
     leg_position_fb(1.0f, 3, 1);
     leg_position_fb(31.8f, 1, 1);
     leg_position_fb(80.0f, 2, 1);
-    sleep_ms(100);
+    coop_sleep_ms(100);
     leg_position_fb(1.0f, 2, 0);
 }

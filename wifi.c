@@ -6,6 +6,7 @@
 #include <string.h>
 #include <stdio.h>
 #include "wifi.h"
+#include "mapping.h"
 #include "movement_library.h"
 #include "sensor_data.h"
 #include "pico/cyw43_arch.h"
@@ -34,7 +35,7 @@ typedef struct TCP_CONNECT_STATE_T_ {
     struct tcp_pcb *pcb;
     int sent_len;
     char headers[128];
-    char result[4096];
+    char result[6000];
     int header_len;
     int result_len;
     ip_addr_t *gw;
@@ -45,6 +46,9 @@ static dhcp_server_t g_dhcp_server;
 static dns_server_t g_dns_server;
 // Implemented in main.c to run the scan/approach routine on demand
 void handle_scan_approach_mode(void);
+void start_mapping_sweep(void);
+// Mapping data stored in main.c
+extern env_map_t g_map;
 
 // Command queue
 typedef enum {
@@ -55,6 +59,7 @@ typedef enum {
     CMD_SIT, CMD_STANDUP, CMD_LEGS_UP, CMD_XPOSITION,
     CMD_SHIFT1, CMD_SHIFT2, CMD_SHIFT3, CMD_SHIFT4,
     CMD_SCAN_APPROACH,
+    CMD_SWEEP,
 } command_t;
 
 #define CMD_QUEUE_SIZE 16
@@ -123,6 +128,7 @@ static const char HOME_PAGE[] =
 ".acts{display:grid;grid-template-columns:1fr 1fr;gap:8px}"
 "button{background:#444;color:#fff;border:none;border-radius:6px;padding:14px;font-size:15px;cursor:pointer}"
 "button:active{background:#666}"
+"button.link{background:#2a2a2a;color:#5af}"
 "</style>"
 "</head><body>"
 "<div class='card'>"
@@ -160,6 +166,8 @@ static const char HOME_PAGE[] =
 "<button onclick=\"c('standup')\">Stand</button>"
 "<button onclick=\"c('shuffle')\">Shuffle</button>"
 "<button onclick=\"c('scan_approach')\">Scan/Approach</button>"
+"<button onclick=\"c('sweep')\">360° Sweep</button>"
+"<button class='link' onclick=\"location.href='/map'\">View Map</button>"
 "<button onclick=\"l(1)\">LED On</button>"
 "<button onclick=\"l(0)\">LED Off</button>"
 "</div>"
@@ -178,6 +186,44 @@ static const char HOME_PAGE[] =
 
 "}).catch(e=>console.log(e))}"
 "setInterval(u,1000);u()"
+"</script>"
+"</body></html>";
+
+static const char MAP_PAGE[] =
+"<!DOCTYPE html><html><head>"
+"<meta name='viewport' content='width=device-width,initial-scale=1'>"
+"<style>"
+"body{margin:0;background:#0d0d0f;color:#e6e6e6;font-family:Arial,sans-serif;display:flex;flex-direction:column;height:100vh}"
+".bar{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:#16161b;box-shadow:0 2px 8px rgba(0,0,0,0.4)}"
+".bar h1{margin:0;font-size:18px;color:#5af}"
+".bar button{background:#1f1f26;color:#fff;border:1px solid #333;border-radius:6px;padding:10px 14px;font-size:14px;cursor:pointer}"
+".bar button:active{background:#2a2a32}"
+".wrap{flex:1;display:flex;flex-direction:column;padding:12px;gap:12px}"
+"canvas{background:#11141a;border:1px solid #222;border-radius:8px;width:100%;height:100%;}"
+".row{display:flex;gap:12px;flex:1;min-height:0}"
+".panel{flex:1;display:flex;flex-direction:column}"
+".meta{font-size:12px;color:#aaa;margin-top:4px}"
+"</style>"
+"</head><body>"
+"<div class='bar'><h1>Environment Map</h1><button onclick=\"window.location='/'\">Back</button></div>"
+"<div class='wrap'>"
+"<div class='row'>"
+"<div class='panel'><canvas id='polar'></canvas><div class='meta'>Polar plot: angle vs distance, colored by temp</div></div>"
+"<div class='panel'><canvas id='temp'></canvas><div class='meta'>Temperature vs angle</div></div>"
+"</div>"
+"<div style='display:flex;gap:8px'><button class='link' onclick=\"window.location='/'\">Back</button><button class='link' onclick=\"window.location='/mapcsv'\">Download CSV</button></div>"
+"</div>"
+"<script>"
+"const polar=document.getElementById('polar'),temp=document.getElementById('temp');"
+"const pc=polar.getContext('2d'),tc=temp.getContext('2d');"
+"let savedCsv=false;"
+"function tempColor(t){if(t<15)return'#3fb1ff';if(t<20)return'#7bd7ff';if(t<25)return'#8dd68d';if(t<30)return'#f4e05a';if(t<35)return'#f98d3f';return'#f85149';}"
+"function draw(){fetch('/mapdata').then(r=>r.json()).then(d=>{drawPolar(d);drawTemp(d);}).catch(()=>{});}"
+"function checkStatus(){fetch('/mapstatus').then(r=>r.json()).then(s=>{if(!s.active&&s.count>0&&!savedCsv){savedCsv=true;fetch('/mapcsv').then(r=>r.text()).then(txt=>{const blob=new Blob([txt],{type:'text/csv'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='sweep.csv';a.click();URL.revokeObjectURL(a.href);});}}).catch(()=>{});}"
+"function clear(ctx){ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);}"
+"function drawPolar(data){const w=polar.width=polar.clientWidth*devicePixelRatio;const h=polar.height=polar.clientHeight*devicePixelRatio;const cx=w/2,cy=h/2;const r=Math.min(cx,cy)*0.9;clear(pc);pc.translate(cx,cy);pc.strokeStyle='#222';for(let i=0;i<8;i++){const a=i*Math.PI/4;pc.beginPath();pc.moveTo(0,0);pc.lineTo(r*Math.sin(a),-r*Math.cos(a));pc.stroke();}pc.beginPath();pc.arc(0,0,r,0,Math.PI*2);pc.stroke();data.forEach(p=>{const ang=p.a*Math.PI/180;const rad=Math.min(r,p.d);pc.fillStyle=tempColor(p.t);pc.beginPath();pc.arc(rad*Math.sin(ang),-rad*Math.cos(ang),6,0,Math.PI*2);pc.fill();});pc.setTransform(1,0,0,1,0,0);}"
+"function drawTemp(data){const w=temp.width=temp.clientWidth*devicePixelRatio;const h=temp.height=temp.clientHeight*devicePixelRatio;clear(tc);if(!data.length)return;const angles=data.map(p=>p.a),temps=data.map(p=>p.t);const minT=Math.min(...temps),maxT=Math.max(...temps);const minA=0,maxA=360;const pad=30;const scaleX=(w-2*pad)/(maxA-minA||1);const scaleY=(h-2*pad)/(maxT-minT||1);tc.strokeStyle='#555';tc.lineWidth=1;tc.beginPath();tc.moveTo(pad,h-pad);tc.lineTo(w-pad,h-pad);tc.moveTo(pad,h-pad);tc.lineTo(pad,pad);tc.stroke();tc.beginPath();tc.strokeStyle='#777';data.forEach((p,i)=>{const x=pad+(p.a-minA)*scaleX;const y=h-pad-(p.t-minT)*scaleY;if(i===0)tc.moveTo(x,y);else tc.lineTo(x,y);});tc.stroke();data.forEach(p=>{const x=pad+(p.a-minA)*scaleX;const y=h-pad-(p.t-minT)*scaleY;tc.fillStyle=tempColor(p.t);tc.beginPath();tc.arc(x,y,4,0,Math.PI*2);tc.fill();});tc.fillStyle='#aaa';tc.font=`${12*devicePixelRatio}px Arial`;tc.fillText('Angle (deg)',w/2-30,pad/2);tc.save();tc.translate(pad/2,h/2+20);tc.rotate(-Math.PI/2);tc.fillText('Temp (C)',0,0);tc.restore();}"
+"setInterval(draw,500);setInterval(checkStatus,1000);draw();"
 "</script>"
 "</body></html>";
 
@@ -204,6 +250,59 @@ static int test_server_content(const char *request, const char *params, char *re
     if (strcmp(request, "/") == 0 || strcmp(request, "/index") == 0 ||
         strcmp(request, "/index.html") == 0) {
         return snprintf(result, max_result_len, "%s", HOME_PAGE);
+    }
+
+    // Map page
+    if (strcmp(request, "/map") == 0) {
+        return snprintf(result, max_result_len, "%s", MAP_PAGE);
+    }
+
+    if (strcmp(request, "/mapdata") == 0) {
+        // Stream compact JSON array; cap output to avoid buffer overflow
+        size_t pos = 0;
+        pos += snprintf(result + pos, max_result_len - pos, "[");
+
+        int max_points = g_map.count;
+        for (int i = 0; i < max_points; i++) {
+            // Leave headroom for closing bracket
+            if (pos > max_result_len - 64) break;
+            int written = snprintf(result + pos, max_result_len - pos,
+                                   "%s{\"a\":%.1f,\"d\":%u,\"t\":%.1f}",
+                                   i ? "," : "",
+                                   g_map.angles[i],
+                                   g_map.distances[i],
+                                   g_map.temps[i]);
+            if (written <= 0 || (size_t)written >= max_result_len - pos) break;
+            pos += written;
+        }
+
+        if (pos > max_result_len - 2) {
+            // Truncate safely
+            pos = max_result_len - 2;
+        }
+        result[pos++] = ']';
+        result[pos] = '\0';
+        return (int)pos;
+    }
+
+    if (strcmp(request, "/mapcsv") == 0) {
+        size_t pos = 0;
+        pos += snprintf(result + pos, max_result_len - pos, "angle_deg,distance_cm,temp_c\n");
+        for (int i = 0; i < g_map.count; i++) {
+            if (pos > max_result_len - 32) break;
+            int written = snprintf(result + pos, max_result_len - pos,
+                                   "%.1f,%u,%.1f\n",
+                                   g_map.angles[i],
+                                   g_map.distances[i],
+                                   g_map.temps[i]);
+            if (written <= 0 || (size_t)written >= max_result_len - pos) break;
+            pos += written;
+        }
+        return (int)pos;
+    }
+
+    if (strcmp(request, "/mapstatus") == 0) {
+        return snprintf(result, max_result_len, "{\"active\":%d,\"count\":%d}", g_map.active ? 1 : 0, g_map.count);
     }
 
     // Favicon
@@ -267,6 +366,7 @@ static int test_server_content(const char *request, const char *params, char *re
             else if (strcmp(dir, "shift3") == 0) cmd = CMD_SHIFT3;
             else if (strcmp(dir, "shift4") == 0) cmd = CMD_SHIFT4;
             else if (strcmp(dir, "scan_approach") == 0) cmd = CMD_SCAN_APPROACH;
+            else if (strcmp(dir, "sweep") == 0) cmd = CMD_SWEEP;
 
             if (cmd != CMD_NONE) {
                 response = enqueue_command(cmd) ? "Command queued" : "Queue full";
@@ -518,6 +618,7 @@ void wifi_ap_background(void) {
         case CMD_SHIFT3:       shift_to(3); break;
         case CMD_SHIFT4:       shift_to(4); break;
         case CMD_SCAN_APPROACH: handle_scan_approach_mode(); break;
+        case CMD_SWEEP:         start_mapping_sweep(); break;
         default: break;
     }
 }

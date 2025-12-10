@@ -12,6 +12,7 @@
 #include "mpu6050.h"
 
 #include "wifi.h"
+#include "mapping.h"
 #include "sensor_data.h"
 #include "pico/cyw43_arch.h"
 
@@ -46,7 +47,22 @@ static inline void refresh_sensor_data(void);
 volatile robot_mode_t g_robot_mode = ROBOT_MODE_WIFI_CONTROL;
 static float g_gyro_heading = 0.0f;
 static uint64_t g_last_gyro_time = 0;
-#define GYRO_Z_BIAS 2.5f
+#define GYRO_Z_BIAS_DEFAULT 2.5f
+static float g_gyro_bias = GYRO_Z_BIAS_DEFAULT;
+env_map_t g_map;
+static uint64_t g_last_collect = 0;
+static uint64_t g_last_rotate = 0;
+static float g_start_heading = 0.0f;
+static bool g_sweep_started = false;
+static float g_prev_heading = 0.0f;
+static float g_rotated_sum = 0.0f;
+
+static void dump_map_csv(void) {
+    printf("angle_deg,distance_cm,temp_c\n");
+    for (uint16_t i = 0; i < g_map.count; i++) {
+        printf("%.1f,%u,%.1f\n", g_map.angles[i], g_map.distances[i], g_map.temps[i]);
+    }
+}
 
 static const char* mode_to_string(robot_mode_t mode) {
     return (mode == ROBOT_MODE_SCAN_APPROACH) ? "Scan/Approach" : "WiFi Control";
@@ -182,18 +198,32 @@ static inline void update_heading_from_gyro(void) {
     }
 
     float dt = (now - g_last_gyro_time) / 1000000.0f;
-    if (dt < 0.01f) return; // avoid tiny steps
+    if (dt < 0.002f) return; // integrate even on short intervals
 
     mpu6050_read_raw(acceleration, gyro);
     float gz = fix2float15(gyro[2]);
-    gz += GYRO_Z_BIAS;
-    if (fabsf(gz) < 0.5f) gz = 0.0f; // deadband
+    gz += g_gyro_bias;
+    if (fabsf(gz) < 0.2f) gz = 0.0f; // tighter deadband
 
     g_gyro_heading += gz * dt;
     while (g_gyro_heading < 0) g_gyro_heading += 360.0f;
     while (g_gyro_heading >= 360.0f) g_gyro_heading -= 360.0f;
 
     g_last_gyro_time = now;
+}
+
+// Simple bias calibration: average gyro Z while stationary
+static void calibrate_gyro_bias(void) {
+    if (!g_found_imu) return;
+    const int samples = 200;
+    float sum = 0.0f;
+    for (int i = 0; i < samples; i++) {
+        mpu6050_read_raw(acceleration, gyro);
+        sum += fix2float15(gyro[2]);
+        sleep_ms(2);
+    }
+    g_gyro_bias = -(sum / samples);
+    printf("Gyro Z bias calibrated to %.3f °/s\n", g_gyro_bias);
 }
 
 // Helper
@@ -208,6 +238,31 @@ static inline void refresh_sensor_data(void) {
         // Still publish the latest heading even if we skip a full sensor refresh
         g_sensor_data.heading = g_gyro_heading;
         g_sensor_data.heading_valid = true;
+    }
+}
+
+// Background hook used by movement_library cooperative sleeps
+void robot_background_tick(void) {
+    update_heading_from_gyro();
+    refresh_sensor_data();
+}
+
+void start_mapping_sweep(void) {
+    if (g_found_imu && g_found_lidar && g_found_temp) {
+        printf("Starting 360° sweep...\n");
+        calibrate_gyro_bias();
+        g_gyro_heading = 0.0f;
+        g_last_gyro_time = time_us_64();
+        g_map.active = true;
+        g_sweep_started = false;
+        g_last_collect = g_last_rotate = 0;
+        g_prev_heading = g_gyro_heading;
+        g_rotated_sum = 0.0f;
+    } else {
+        printf("⚠️  Cannot start sweep - missing sensors:\n");
+        if (!g_found_imu) printf("  - IMU not available\n");
+        if (!g_found_lidar) printf("  - LiDAR not available\n");
+        if (!g_found_temp) printf("  - Temperature sensor not available\n");
     }
 }
 
@@ -395,6 +450,9 @@ int main(void) {
     } else {
         printf("⚠️  MPU6050 not found - IMU features disabled\n\n");
     }
+
+    // Initialize mapping storage
+    map_init(&g_map);
     
     printf("Please wait for 10 seconds...\n");
     stand_up();
@@ -548,6 +606,17 @@ int main(void) {
                     printf("Please! I don't want to go\n");
                     running = false;
                     break;
+                case 'n':
+                case 'N':
+                    if (g_found_imu && g_found_lidar && g_found_temp) {
+                        start_mapping_sweep();
+                    } else {
+                        printf("⚠️  Cannot start sweep - missing sensors:\n");
+                        if (!g_found_imu) printf("  - IMU not available\n");
+                        if (!g_found_lidar) printf("  - LiDAR not available\n");
+                        if (!g_found_temp) printf("  - Temperature sensor not available\n");
+                    }
+                    break;
 
                 case 'r':
                 case 'R':
@@ -663,6 +732,73 @@ int main(void) {
 
         // Update sensor data periodically (every 500ms) for WiFi display
         refresh_sensor_data();
+
+        // Mapping sweep handling (non-blocking)
+        if (g_map.active) {
+            uint64_t now_us = time_us_64();
+
+            if (!g_sweep_started) {
+                g_start_heading = g_gyro_heading;
+                g_sweep_started = true;
+                g_last_collect = now_us;
+                g_last_rotate = now_us;
+                printf("Starting 360° sweep from %.1f°\n", g_start_heading);
+                g_map.count = 0;
+                g_prev_heading = g_gyro_heading;
+                g_rotated_sum = 0.0f;
+            } else {
+                // Accumulate rotation based on heading change (favor CCW; ignore backward drift)
+                float delta = g_gyro_heading - g_prev_heading;
+                if (delta < -180.0f) delta += 360.0f;
+                else if (delta > 180.0f) delta -= 360.0f;
+                if (delta > 0.0f) {
+                    g_rotated_sum += delta;
+                    if (g_rotated_sum > 360.0f) g_rotated_sum = 360.0f;
+                }
+                g_prev_heading = g_gyro_heading;
+            }
+
+            // Collect data ~4 Hz
+            if ((now_us - g_last_collect) > 250000) {
+                uint16_t dist = 0;
+                float temp = 0.0f;
+
+                if (g_found_lidar) {
+                    tfluna_data_t data;
+                    if (tfluna_read_data(&lidar_sensor, &data) && data.valid) {
+                        dist = data.distance;
+                    }
+                }
+
+                if (g_found_temp) {
+                    float obj, amb;
+                    if (mlx90614_read_both_temps(&obj, &amb)) {
+                        temp = obj;
+                    }
+                }
+
+                map_add(&g_map, g_gyro_heading, dist, temp);
+                printf("Angle: %6.1f° | Distance: %4d cm | Temp: %5.1f°C\n",
+                       g_gyro_heading, dist, temp);
+                g_last_collect = now_us;
+            }
+
+            // Rotate every 2s until 360 covered
+            float angle_rotated = g_rotated_sum;
+
+            if (angle_rotated >= 360.0f) {
+                g_map.active = false;
+                g_sweep_started = false;
+                dump_map_csv();
+                printf("360° sweep complete!\n");
+            } else if ((now_us - g_last_rotate) > 2000000) {
+                ccw();
+                g_last_rotate = now_us;
+                printf("Heading: %.1f° (rotated %.1f° of 360°)\n", g_gyro_heading, angle_rotated);
+            }
+        } else {
+            g_sweep_started = false;
+        }
 
         // Mode handling
         if (g_robot_mode != last_mode) {

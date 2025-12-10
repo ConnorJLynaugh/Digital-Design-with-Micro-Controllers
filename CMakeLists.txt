@@ -34,6 +34,7 @@ add_executable(QUADRAPED_WIFI
     tfluna_i2c.c
     mlx90614.c
     mpu6050.c
+    mapping.c
     # Wifi
     wifi.c
     dhcpserver/dhcpserver.c

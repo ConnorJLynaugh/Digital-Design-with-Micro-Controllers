@@ -65,4 +65,7 @@ void leg_position_fb(float y, int l, int s);
 void c_f(void);
 void c_b(void);
 
+// Background tick hook implemented by main firmware (used during cooperative sleeps)
+void robot_background_tick(void);
+
 #endif // MOVEMENT_LIBRARY_H
