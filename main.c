@@ -37,13 +37,18 @@ fix15 acceleration[3], gyro[3];
 
 // Define the global sensor data
 sensor_data_t g_sensor_data = {0};
+static bool g_found_lidar = false;
+static bool g_found_imu = false;
+static bool g_found_temp = false;
+static absolute_time_t g_last_sensor_update;
+static inline void refresh_sensor_data(void);
 volatile robot_mode_t g_robot_mode = ROBOT_MODE_WIFI_CONTROL;
 
 static const char* mode_to_string(robot_mode_t mode) {
     return (mode == ROBOT_MODE_SCAN_APPROACH) ? "Scan/Approach" : "WiFi Control";
 }
 
-static void handle_scan_approach_mode(void) {
+void handle_scan_approach_mode(void) {
 
     float temps[9] = {0.0f};
     float highest_temp;
@@ -56,7 +61,8 @@ static void handle_scan_approach_mode(void) {
     }
 
     // Take first measurement
-    sleep_ms(1000);
+    sleep_ms(200);
+    refresh_sensor_data();
     temps[turn_counter] = g_sensor_data.temp_f;
     highest_temp = temps[turn_counter];
     hottest_index = turn_counter;
@@ -64,7 +70,8 @@ static void handle_scan_approach_mode(void) {
     printf("Going Clockwise\n");
     for (int i = 0; i < 8; i++) {
         cw();
-        sleep_ms(1000);
+        sleep_ms(200);
+        refresh_sensor_data();
         turn_counter++;
         temps[turn_counter] = g_sensor_data.temp_f;
         if (temps[turn_counter] > highest_temp) {
@@ -79,7 +86,17 @@ static void handle_scan_approach_mode(void) {
         turn_counter--;
     }
 
+    refresh_sensor_data();
+    float dist = g_sensor_data.distance;
+
     // Do Something
+    while (dist >= 10.0) {
+        backward();
+        refresh_sensor_data();
+        dist = g_sensor_data.distance;
+    }
+    hi();
+
 }
 
 void print_menu(void) {
@@ -159,6 +176,14 @@ void update_sensor_data(bool found_imu, bool found_lidar, bool found_temp) {
     }
 }
 
+// Helper: refresh sensor data if interval elapsed
+static inline void refresh_sensor_data(void) {
+    if (absolute_time_diff_us(g_last_sensor_update, get_absolute_time()) > 500000) {
+        update_sensor_data(g_found_imu, g_found_lidar, g_found_temp);
+        g_last_sensor_update = get_absolute_time();
+    }
+}
+
 int main(void) {
     // Initialize stdio for USB serial
     stdio_init_all();
@@ -213,10 +238,7 @@ int main(void) {
     // Scan main I2C bus
     printf("\nScanning main I2C bus (GPIO 2/3)...\n");
     bool found = false;
-    bool found_lidar = false;
-    bool found_imu = false;
     bool found_pca = false;
-    bool found_temp = false;
     bool mlx_ping = false;
 
     for (int addr = 0; addr < 128; addr++) {
@@ -226,16 +248,16 @@ int main(void) {
             printf("  Found device at address 0x%02X", addr);
             if (addr == TFLUNA_DEFAULT_ADDR) {
                 printf(" (TF-Luna LiDAR)");
-                found_lidar = true;
+                g_found_lidar = true;
             } else if (addr == 0x68) {
                 printf(" (MPU6050 IMU)");
-                found_imu = true;
+                g_found_imu = true;
             } else if (addr == PCA9685_DEFAULT_ADDRESS) {
                 printf(" (PCA9685 Servo Driver)");
                 found_pca = true;
             } else if (addr == MLX90614_DEFAULT_ADDR) {
                 printf(" (MLX90614 IR Thermometer)");
-                found_temp = true;
+                g_found_temp = true;
             }
             printf("\n");
             found = true;
@@ -243,9 +265,9 @@ int main(void) {
     }
 
     mlx_ping = mlx90614_ping();
-    if (mlx_ping && !found_temp) {
+    if (mlx_ping && !g_found_temp) {
         printf("  MLX90614 responded to ping at 0x%02X\n", MLX90614_DEFAULT_ADDR);
-        found_temp = true;
+        g_found_temp = true;
     }
 
     if (!found) {
@@ -268,16 +290,16 @@ int main(void) {
                 printf("  Found device at address 0x%02X", addr);
                 if (addr == MLX90614_DEFAULT_ADDR) {
                     printf(" (MLX90614 IR Thermometer)");
-                    found_temp = true;
+                    g_found_temp = true;
                 }
                 printf("\n");
             }
         }
-        if (!found_temp) {
+        if (!g_found_temp) {
             printf("  No devices found on temp sensor I2C bus\n");
         }
         printf("\n");
-    } else if (!found_temp) {
+    } else if (!g_found_temp) {
         printf("⚠️  MLX90614 not found on shared I2C bus (ping: %s)\n\n", mlx_ping ? "responded" : "no response");
     } else {
         printf("✓ MLX90614 detected on shared I2C bus at 0x%02X (ping: %s)\n\n", MLX90614_DEFAULT_ADDR, mlx_ping ? "responded" : "no response");
@@ -289,7 +311,7 @@ int main(void) {
     pca9685_set_pwm_freq(&pwm, 60.0f);
 
     // Initialize TF-Luna LiDAR
-    if (found_lidar) {
+    if (g_found_lidar) {
         printf("Initializing TF-Luna LiDAR...\n");
         if (tfluna_init(&lidar_sensor, I2C_PORT, TFLUNA_DEFAULT_ADDR)) {
             printf("✓ TF-Luna initialized successfully!\n");
@@ -303,17 +325,17 @@ int main(void) {
             }
         } else {
             printf("✗ Failed to initialize TF-Luna\n\n");
-            found_lidar = false;
+            g_found_lidar = false;
         }
     } else {
         printf("⚠️  TF-Luna not found - LiDAR features disabled\n\n");
     }
 
     // Initialize MLX90614 IR Thermometer (try even if scan missed it)
-    printf("Initializing MLX90614 IR Thermometer%s...\n", found_temp ? "" : " (not detected in scan, attempting anyway)");
+    printf("Initializing MLX90614 IR Thermometer%s...\n", g_found_temp ? "" : " (not detected in scan, attempting anyway)");
     if (mlx90614_init()) {
         printf("✓ MLX90614 initialized successfully!\n");
-        found_temp = true;
+        g_found_temp = true;
 
         float obj_temp, amb_temp;
         if (mlx90614_read_both_temps(&obj_temp, &amb_temp)) {
@@ -321,11 +343,11 @@ int main(void) {
         }
     } else {
         printf("✗ Failed to initialize MLX90614\n\n");
-        found_temp = false;
+        g_found_temp = false;
     }
 
     // Initialize MPU6050 IMU
-    if (found_imu) {
+    if (g_found_imu) {
         printf("Initializing MPU6050 IMU...\n");
         mpu6050_reset();
         sleep_ms(100);
@@ -354,9 +376,7 @@ int main(void) {
     
     bool running = true;
     robot_mode_t last_mode = g_robot_mode;
-    
-    // Timer for sensor updates
-    absolute_time_t last_sensor_update = get_absolute_time();
+    g_last_sensor_update = get_absolute_time();
     
     while (running) {
         // Get character from serial input
@@ -421,6 +441,7 @@ int main(void) {
                     printf("Saying Hi\n");
                     hi();
                     break;
+
                     
                 case 'c':
                 case 'C':
@@ -502,7 +523,7 @@ int main(void) {
                 case 'r':
                 case 'R':
                     printf("\n========== SENSOR READING ==========\n");
-                    if (found_lidar) {
+                    if (g_found_lidar) {
                         tfluna_data_t lidar_data;
                         if (tfluna_read_data(&lidar_sensor, &lidar_data)) {
                             if (lidar_data.valid) {
@@ -521,7 +542,7 @@ int main(void) {
 
                     printf("\n");
 
-                    if (found_temp) {
+                    if (g_found_temp) {
                         float obj_temp, amb_temp;
                         if (mlx90614_read_both_temps(&obj_temp, &amb_temp)) {
                             printf("Object Temp:  %.2f°C (%.1f°F)\n",
@@ -529,7 +550,7 @@ int main(void) {
                             printf("Ambient Temp: %.2f°C (%.1f°F)\n",
                                    amb_temp, mlx90614_celsius_to_fahrenheit(amb_temp));
 
-                            if (found_lidar) {
+                            if (g_found_lidar) {
                                 tfluna_data_t lidar_data;
                                 if (tfluna_read_data(&lidar_sensor, &lidar_data) && lidar_data.valid) {
                                     printf("\nAnalysis:\n");
@@ -548,7 +569,7 @@ int main(void) {
 
                 case 'y':
                 case 'Y':
-                    if (found_imu) {
+                    if (g_found_imu) {
                         printf("\n========== IMU READING ==========\n");
                         
                         // Read raw accelerometer and gyroscope data
@@ -597,10 +618,7 @@ int main(void) {
         }
 
         // Update sensor data periodically (every 500ms) for WiFi display
-        if (absolute_time_diff_us(last_sensor_update, get_absolute_time()) > 500000) {
-            update_sensor_data(found_imu, found_lidar, found_temp);
-            last_sensor_update = get_absolute_time();
-        }
+        refresh_sensor_data();
 
         // Mode handling
         if (g_robot_mode != last_mode) {

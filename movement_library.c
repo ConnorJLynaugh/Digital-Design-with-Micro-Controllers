@@ -134,7 +134,7 @@ void sit(void) {
 }
 
 void stand_up(void) {
-    legs_up();
+    //legs_up();
     
     calfs(30);  // legs touching the ground
     sleep_ms(1000);
@@ -391,16 +391,16 @@ void hi(void) {
     printf("Hello!! HUMAN!\n");
     xposition();
     shift_to(3);
-    thigh_1(170);
+    thigh_3(170);
     
     for(int i = 0; i < 5; i++) {
         sleep_ms(200);
-        calf_1(90);
+        calf_3(90);
         sleep_ms(200);
-        calf_1(160);
+        calf_3(160);
     }
     
-    calf_1(50);
+    calf_3(50);
     xposition();
 }
 

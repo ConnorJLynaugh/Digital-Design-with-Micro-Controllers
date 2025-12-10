@@ -43,6 +43,8 @@ typedef struct TCP_CONNECT_STATE_T_ {
 static TCP_SERVER_T g_tcp_state;
 static dhcp_server_t g_dhcp_server;
 static dns_server_t g_dns_server;
+// Implemented in main.c to run the scan/approach routine on demand
+void handle_scan_approach_mode(void);
 
 // Command queue
 typedef enum {
@@ -52,6 +54,7 @@ typedef enum {
     CMD_HI, CMD_SHUFFLE, CMD_HUMPING, CMD_SQUADS,
     CMD_SIT, CMD_STANDUP, CMD_LEGS_UP, CMD_XPOSITION,
     CMD_SHIFT1, CMD_SHIFT2, CMD_SHIFT3, CMD_SHIFT4,
+    CMD_SCAN_APPROACH,
 } command_t;
 
 #define CMD_QUEUE_SIZE 16
@@ -114,6 +117,8 @@ static const char HOME_PAGE[] =
 ".sensor{flex:1;background:#333;border-radius:6px;padding:8px;text-align:center}"
 ".val{font-size:24px;font-weight:bold;color:#5af}"
 ".lbl{font-size:11px;color:#aaa}"
+
+
 ".dpad{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px}"
 ".acts{display:grid;grid-template-columns:1fr 1fr;gap:8px}"
 "button{background:#444;color:#fff;border:none;border-radius:6px;padding:14px;font-size:15px;cursor:pointer}"
@@ -129,6 +134,13 @@ static const char HOME_PAGE[] =
 "</div>"
 "</div>"
 "<div class='card'>"
+
+
+
+
+
+
+
 "<h2>Move</h2>"
 "<div class='dpad'>"
 "<div></div><button onclick=\"c('forward')\">&#9650;</button><div></div>"
@@ -147,48 +159,53 @@ static const char HOME_PAGE[] =
 "<button onclick=\"c('sit')\">Sit</button>"
 "<button onclick=\"c('standup')\">Stand</button>"
 "<button onclick=\"c('shuffle')\">Shuffle</button>"
+"<button onclick=\"c('scan_approach')\">Scan/Approach</button>"
 "<button onclick=\"l(1)\">LED On</button>"
 "<button onclick=\"l(0)\">LED Off</button>"
 "</div>"
 "</div>"
 "<script>"
+
 "function c(d){fetch('/cmd?dir='+d)}"
 "function l(v){fetch('/led?state='+v)}"
+
+
 "function u(){"
 "fetch('/sensors').then(r=>r.json()).then(d=>{"
 "document.getElementById('p').textContent=d.pv?d.pitch.toFixed(1):'--';"
 "document.getElementById('d').textContent=d.dv?d.dist:'--';"
 "document.getElementById('t').textContent=d.tv?d.temp_f.toFixed(1):'--';"
+
 "}).catch(e=>console.log(e))}"
 "setInterval(u,1000);u()"
 "</script>"
 "</body></html>";
 
 static int test_server_content(const char *request, const char *params, char *result, size_t max_result_len) {
-    
+
     // iOS Captive Portal
     if (strcmp(request, "/hotspot-detect.html") == 0) {
         return snprintf(result, max_result_len, "%s", HOME_PAGE);
     }
-    
+
     // Android Captive Portal
     if (strcmp(request, "/generate_204") == 0) {
         return -1;
     }
-    
+
     if (strcmp(request, "/connecttest.txt") == 0 ||
         strcmp(request, "/success.txt") == 0 ||
         strcmp(request, "/ncsi.txt") == 0 ||
         strcmp(request, "/connect") == 0) {
         return snprintf(result, max_result_len, "%s", HOME_PAGE);
     }
-    
+
     // Main page
     if (strcmp(request, "/") == 0 || strcmp(request, "/index") == 0 ||
         strcmp(request, "/index.html") == 0) {
         return snprintf(result, max_result_len, "%s", HOME_PAGE);
     }
-    
+
     // Favicon
     if (strcmp(request, "/favicon.ico") == 0) {
         return 0;
@@ -205,13 +222,26 @@ static int test_server_content(const char *request, const char *params, char *re
                        g_sensor_data.temp_f,
                        g_sensor_data.temp_c,
                        g_sensor_data.temp_valid ? 1 : 0);
+
+
+
+
+
+
+
+
+
+
+
+
+
     }
 
     // Movement commands
     if (strncmp(request, "/cmd", 4) == 0) {
         char dir[32] = {0};
         const char *response = "Unknown command";
-        
+
         if (params && sscanf(params, "dir=%31s", dir) == 1) {
             DEBUG_printf("Command: %s\n", dir);
 
@@ -236,21 +266,22 @@ static int test_server_content(const char *request, const char *params, char *re
             else if (strcmp(dir, "shift2") == 0) cmd = CMD_SHIFT2;
             else if (strcmp(dir, "shift3") == 0) cmd = CMD_SHIFT3;
             else if (strcmp(dir, "shift4") == 0) cmd = CMD_SHIFT4;
+            else if (strcmp(dir, "scan_approach") == 0) cmd = CMD_SCAN_APPROACH;
 
             if (cmd != CMD_NONE) {
                 response = enqueue_command(cmd) ? "Command queued" : "Queue full";
             }
-            
+
             g_tcp_state.command_count++;
         }
-        
+
         return snprintf(result, max_result_len, "%s", response);
     }
 
     // LED Control
     if (strncmp(request, "/led", 4) == 0) {
         int led_state = 0;
-        
+
         if (params && sscanf(params, "state=%d", &led_state) == 1) {
             cyw43_gpio_set(&cyw43_state, LED_GPIO, led_state);
             DEBUG_printf("LED: %d\n", led_state);
@@ -275,9 +306,9 @@ static err_t tcp_server_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
 err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) {
     TCP_CONNECT_STATE_T *con_state = (TCP_CONNECT_STATE_T*)arg;
     if (!p) return tcp_close_client_connection(con_state, pcb, ERR_OK);
-    
+
     assert(con_state && con_state->pcb == pcb);
-    
+
     if (p->tot_len > 0) {
         pbuf_copy_partial(p, con_state->headers, 
                          p->tot_len > sizeof(con_state->headers) - 1 ? 
@@ -286,7 +317,7 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
         if (strncmp(HTTP_GET, con_state->headers, sizeof(HTTP_GET) - 1) == 0) {
             char *request = con_state->headers + sizeof(HTTP_GET);
             char *params = strchr(request, '?');
-            
+
             if (params) {
                 *params++ = 0;
                 char *space = strchr(params, ' ');
@@ -325,7 +356,7 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
             // Check if we have enough send buffer space
             u16_t available = tcp_sndbuf(pcb);
             u16_t needed = con_state->header_len + con_state->result_len;
-            
+
             if (available < needed) {
                 DEBUG_printf("Not enough buffer space: need %d, have %d\n", needed, available);
                 // Wait for buffer space - poll callback will retry
@@ -350,7 +381,7 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
                     return tcp_close_client_connection(con_state, pcb, write_err);
                 }
             }
-            
+
             // Flush the output
             tcp_output(pcb);
         }
@@ -385,7 +416,7 @@ static err_t tcp_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err)
         DEBUG_printf("Out of memory\n");
         return ERR_MEM;
     }
-    
+
     con_state->pcb = client_pcb;
     con_state->gw = &state->gw;
 
@@ -438,7 +469,7 @@ bool wifi_ap_start(const char *ap_name, const char *password) {
 
     ip4_addr_t mask;
     memset(&g_tcp_state, 0, sizeof(g_tcp_state));
-    
+
 #if LWIP_IPV6
     g_tcp_state.gw.u_addr.ip4.addr = PP_HTONL(CYW43_DEFAULT_IP_AP_ADDRESS);
     mask.addr = PP_HTONL(CYW43_DEFAULT_IP_MASK);
@@ -486,6 +517,7 @@ void wifi_ap_background(void) {
         case CMD_SHIFT2:       shift_to(2); break;
         case CMD_SHIFT3:       shift_to(3); break;
         case CMD_SHIFT4:       shift_to(4); break;
+        case CMD_SCAN_APPROACH: handle_scan_approach_mode(); break;
         default: break;
     }
 }
