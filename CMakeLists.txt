@@ -33,6 +33,7 @@ add_executable(QUADRAPED_WIFI
     pca9685.c
     tfluna_i2c.c
     mlx90614.c
+    mpu6050.c
     # Wifi
     wifi.c
     dhcpserver/dhcpserver.c
@@ -62,6 +63,7 @@ pico_configure_ip4_address(QUADRAPED_WIFI PRIVATE
 )
 
 pico_add_extra_outputs(QUADRAPED_WIFI)
+
 
 
 
