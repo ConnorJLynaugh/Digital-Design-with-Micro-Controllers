@@ -11,6 +11,7 @@
 #include "mpu6050.h"
 
 #include "wifi.h"
+#include "sensor_data.h"
 #include "pico/cyw43_arch.h"
 
 // I2C configuration for main devices
@@ -19,16 +20,26 @@
 #define I2C_SCL_PIN 3
 #define I2C_FREQ 100000
 
-// Separate I2C for MLX90614 temperature sensor
-#define I2C_TEMP_PORT i2c0
-#define I2C_TEMP_SDA_PIN 16
-#define I2C_TEMP_SCL_PIN 17
+// MLX90614 shares the main bus on I2C1
+#define I2C_TEMP_PORT I2C_PORT
+#define I2C_TEMP_SDA_PIN I2C_SDA_PIN
+#define I2C_TEMP_SCL_PIN I2C_SCL_PIN
 
 // Sensors
 tfluna_t lidar_sensor;
-mlx90614_t temp_sensor;
 fix15 acceleration[3], gyro[3];
-//PCA9685 pwm;  
+
+// Define the global sensor data
+sensor_data_t g_sensor_data = {0};
+volatile robot_mode_t g_robot_mode = ROBOT_MODE_WIFI_CONTROL;
+
+static const char* mode_to_string(robot_mode_t mode) {
+    return (mode == ROBOT_MODE_SCAN_APPROACH) ? "Scan/Approach" : "WiFi Control";
+}
+
+static void handle_scan_approach_mode(void) {
+
+}
 
 void print_menu(void) {
     printf("\n=== Quadruped Robot Control Menu ===\n");
@@ -61,6 +72,52 @@ void print_menu(void) {
     printf("====================================\n\n");
 }
 
+void update_sensor_data(bool found_imu, bool found_lidar, bool found_temp) {
+    // Update distance
+    if (found_lidar) {
+        tfluna_data_t lidar_data;
+        if (tfluna_read_data(&lidar_sensor, &lidar_data) && lidar_data.valid) {
+            g_sensor_data.distance = lidar_data.distance;
+            g_sensor_data.distance_valid = true;
+        } else {
+            g_sensor_data.distance_valid = false;
+        }
+    } else {
+        g_sensor_data.distance_valid = false;
+    }
+
+    // Update temperature
+    if (found_temp) {
+        float obj_temp_c, amb_temp_c;
+        if (mlx90614_read_both_temps(&obj_temp_c, &amb_temp_c)) {
+            g_sensor_data.temp_c = obj_temp_c;
+            g_sensor_data.temp_f = mlx90614_celsius_to_fahrenheit(obj_temp_c);
+            g_sensor_data.temp_valid = true;
+        } else {
+            g_sensor_data.temp_valid = false;
+        }
+    } else {
+        g_sensor_data.temp_valid = false;
+    }
+
+    // Update pitch
+    if (found_imu) {
+        // Local arrays to ensure fresh data
+        fix15 local_accel[3], local_gyro[3];
+        mpu6050_read_raw(local_accel, local_gyro);
+        
+        float ax = fix2float15(local_accel[0]);
+        float ay = fix2float15(local_accel[1]);
+        float az = fix2float15(local_accel[2]);
+        
+        // Calculate pitch (rotation around Y-axis)
+        g_sensor_data.pitch = atan2f(-ax, sqrtf(ay*ay + az*az)) * 180.0f / 3.14159f;
+        g_sensor_data.pitch_valid = true;
+    } else {
+        g_sensor_data.pitch_valid = false;
+    }
+}
+
 int main(void) {
     // Initialize stdio for USB serial
     stdio_init_all();
@@ -84,11 +141,15 @@ int main(void) {
     printf("    SDA Pin: GPIO %d, SCL Pin: GPIO %d\n", I2C_SDA_PIN, I2C_SCL_PIN);
     printf("    PCA9685: 0x%02X, TF-Luna: 0x%02X, MPU6050: 0x68\n", 
            PCA9685_DEFAULT_ADDRESS, TFLUNA_DEFAULT_ADDR);
-    printf("  Temp Sensor I2C (GPIO 16/17):\n");
+    printf("  Temp Sensor I2C:\n");
     printf("    SDA Pin: GPIO %d, SCL Pin: GPIO %d\n", I2C_TEMP_SDA_PIN, I2C_TEMP_SCL_PIN);
     printf("    MLX90614: 0x%02X\n\n", MLX90614_DEFAULT_ADDR);
-    
-    printf("Initializing main I2C (GPIO 2/3)...\n");
+
+    bool temp_shares_main_bus = (I2C_TEMP_PORT == I2C_PORT) &&
+                                (I2C_TEMP_SDA_PIN == I2C_SDA_PIN) &&
+                                (I2C_TEMP_SCL_PIN == I2C_SCL_PIN);
+
+    printf("Initializing main I2C (GPIO %d/%d)...\n", I2C_SDA_PIN, I2C_SCL_PIN);
     // Initialize main I2C
     i2c_init(I2C_PORT, I2C_FREQ);
     gpio_set_function(I2C_SDA_PIN, GPIO_FUNC_I2C);
@@ -96,13 +157,17 @@ int main(void) {
     gpio_pull_up(I2C_SDA_PIN);
     gpio_pull_up(I2C_SCL_PIN);
     
-    printf("Initializing temp sensor I2C (GPIO 16/17)...\n");
-    // Initialize temp sensor I2C
-    i2c_init(I2C_TEMP_PORT, I2C_FREQ);
-    gpio_set_function(I2C_TEMP_SDA_PIN, GPIO_FUNC_I2C);
-    gpio_set_function(I2C_TEMP_SCL_PIN, GPIO_FUNC_I2C);
-    gpio_pull_up(I2C_TEMP_SDA_PIN);
-    gpio_pull_up(I2C_TEMP_SCL_PIN);
+    if (!temp_shares_main_bus) {
+        printf("Initializing temp sensor I2C (GPIO %d/%d)...\n", I2C_TEMP_SDA_PIN, I2C_TEMP_SCL_PIN);
+        // Initialize temp sensor I2C
+        i2c_init(I2C_TEMP_PORT, I2C_FREQ);
+        gpio_set_function(I2C_TEMP_SDA_PIN, GPIO_FUNC_I2C);
+        gpio_set_function(I2C_TEMP_SCL_PIN, GPIO_FUNC_I2C);
+        gpio_pull_up(I2C_TEMP_SDA_PIN);
+        gpio_pull_up(I2C_TEMP_SCL_PIN);
+    } else {
+        printf("Temp sensor shares the main I2C bus.\n");
+    }
     
     // Scan main I2C bus
     printf("\nScanning main I2C bus (GPIO 2/3)...\n");
@@ -110,6 +175,8 @@ int main(void) {
     bool found_lidar = false;
     bool found_imu = false;
     bool found_pca = false;
+    bool found_temp = false;
+    bool mlx_ping = false;
 
     for (int addr = 0; addr < 128; addr++) {
         uint8_t data;
@@ -125,10 +192,19 @@ int main(void) {
             } else if (addr == PCA9685_DEFAULT_ADDRESS) {
                 printf(" (PCA9685 Servo Driver)");
                 found_pca = true;
+            } else if (addr == MLX90614_DEFAULT_ADDR) {
+                printf(" (MLX90614 IR Thermometer)");
+                found_temp = true;
             }
             printf("\n");
             found = true;
         }
+    }
+
+    mlx_ping = mlx90614_ping();
+    if (mlx_ping && !found_temp) {
+        printf("  MLX90614 responded to ping at 0x%02X\n", MLX90614_DEFAULT_ADDR);
+        found_temp = true;
     }
 
     if (!found) {
@@ -141,25 +217,30 @@ int main(void) {
         printf("✓ PCA9685 detected on the I2C bus at 0x%02X\n", PCA9685_DEFAULT_ADDRESS);
     }
 
-    // Scan temp sensor I2C bus
-    printf("\nScanning temp sensor I2C bus (GPIO 16/17)...\n");
-    bool found_temp = false;
-    for (int addr = 0; addr < 128; addr++) {
-        uint8_t data;
-        int ret = i2c_read_timeout_us(I2C_TEMP_PORT, addr, &data, 1, false, 10000);
-        if (ret > 0) {
-            printf("  Found device at address 0x%02X", addr);
-            if (addr == MLX90614_DEFAULT_ADDR) {
-                printf(" (MLX90614 IR Thermometer)");
-                found_temp = true;
+    if (!temp_shares_main_bus) {
+        // Scan temp sensor I2C bus
+        printf("\nScanning temp sensor I2C bus (GPIO %d/%d)...\n", I2C_TEMP_SDA_PIN, I2C_TEMP_SCL_PIN);
+        for (int addr = 0; addr < 128; addr++) {
+            uint8_t data;
+            int ret = i2c_read_timeout_us(I2C_TEMP_PORT, addr, &data, 1, false, 10000);
+            if (ret > 0) {
+                printf("  Found device at address 0x%02X", addr);
+                if (addr == MLX90614_DEFAULT_ADDR) {
+                    printf(" (MLX90614 IR Thermometer)");
+                    found_temp = true;
+                }
+                printf("\n");
             }
-            printf("\n");
         }
+        if (!found_temp) {
+            printf("  No devices found on temp sensor I2C bus\n");
+        }
+        printf("\n");
+    } else if (!found_temp) {
+        printf("⚠️  MLX90614 not found on shared I2C bus (ping: %s)\n\n", mlx_ping ? "responded" : "no response");
+    } else {
+        printf("✓ MLX90614 detected on shared I2C bus at 0x%02X (ping: %s)\n\n", MLX90614_DEFAULT_ADDR, mlx_ping ? "responded" : "no response");
     }
-    if (!found_temp) {
-        printf("  No devices found on temp sensor I2C bus\n");
-    }
-    printf("\n");
     
     // Initialize PCA9685
     printf("Initializing PCA9685...\n");
@@ -187,22 +268,19 @@ int main(void) {
         printf("⚠️  TF-Luna not found - LiDAR features disabled\n\n");
     }
 
-    // Initialize MLX90614 IR Thermometer
-    if (found_temp) {
-        printf("Initializing MLX90614 IR Thermometer...\n");
-        if (mlx90614_init(&temp_sensor, I2C_TEMP_PORT, MLX90614_DEFAULT_ADDR)) {
-            printf("✓ MLX90614 initialized successfully!\n");
+    // Initialize MLX90614 IR Thermometer (try even if scan missed it)
+    printf("Initializing MLX90614 IR Thermometer%s...\n", found_temp ? "" : " (not detected in scan, attempting anyway)");
+    if (mlx90614_init()) {
+        printf("✓ MLX90614 initialized successfully!\n");
+        found_temp = true;
 
-            float obj_temp, amb_temp;
-            if (mlx90614_read_both_temps(&temp_sensor, &obj_temp, &amb_temp)) {
-                printf("  Object temp: %.2f°C | Ambient: %.2f°C\n\n", obj_temp, amb_temp);
-            }
-        } else {
-            printf("✗ Failed to initialize MLX90614\n\n");
-            found_temp = false;
+        float obj_temp, amb_temp;
+        if (mlx90614_read_both_temps(&obj_temp, &amb_temp)) {
+            printf("  Object temp: %.2f°C | Ambient: %.2f°C\n\n", obj_temp, amb_temp);
         }
     } else {
-        printf("⚠️  MLX90614 not found - temperature measurement disabled\n\n");
+        printf("✗ Failed to initialize MLX90614\n\n");
+        found_temp = false;
     }
 
     // Initialize MPU6050 IMU
@@ -234,6 +312,10 @@ int main(void) {
     print_menu();
     
     bool running = true;
+    robot_mode_t last_mode = g_robot_mode;
+    
+    // Timer for sensor updates
+    absolute_time_t last_sensor_update = get_absolute_time();
     
     while (running) {
         // Get character from serial input
@@ -400,7 +482,7 @@ int main(void) {
 
                     if (found_temp) {
                         float obj_temp, amb_temp;
-                        if (mlx90614_read_both_temps(&temp_sensor, &obj_temp, &amb_temp)) {
+                        if (mlx90614_read_both_temps(&obj_temp, &amb_temp)) {
                             printf("Object Temp:  %.2f°C (%.1f°F)\n",
                                    obj_temp, mlx90614_celsius_to_fahrenheit(obj_temp));
                             printf("Ambient Temp: %.2f°C (%.1f°F)\n",
@@ -473,7 +555,23 @@ int main(void) {
             }
         }
 
-        // Wifi
+        // Update sensor data periodically (every 500ms) for WiFi display
+        if (absolute_time_diff_us(last_sensor_update, get_absolute_time()) > 500000) {
+            update_sensor_data(found_imu, found_lidar, found_temp);
+            last_sensor_update = get_absolute_time();
+        }
+
+        // Mode handling
+        if (g_robot_mode != last_mode) {
+            printf("Mode changed to %s\n", mode_to_string(g_robot_mode));
+            last_mode = g_robot_mode;
+        }
+
+        if (g_robot_mode == ROBOT_MODE_SCAN_APPROACH) {
+            handle_scan_approach_mode();
+        }
+
+        // Wifi background tasks
         wifi_ap_background();
         
         // Small delay to prevent CPU hogging

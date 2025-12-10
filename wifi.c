@@ -1,11 +1,13 @@
 /**
  * Improved WiFi AP Control for Quadruped Robot
- * Fixes and enhancements for better stability and UX
+ * With real-time sensor data display
  */
 
 #include <string.h>
+#include <stdio.h>
 #include "wifi.h"
 #include "movement_library.h"
+#include "sensor_data.h"
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
 #include "lwip/pbuf.h"
@@ -25,7 +27,7 @@ typedef struct TCP_SERVER_T_ {
     struct tcp_pcb *server_pcb;
     bool complete;
     ip_addr_t gw;
-    uint32_t command_count;  // Track commands executed
+    uint32_t command_count;
 } TCP_SERVER_T;
 
 typedef struct TCP_CONNECT_STATE_T_ {
@@ -42,29 +44,14 @@ static TCP_SERVER_T g_tcp_state;
 static dhcp_server_t g_dhcp_server;
 static dns_server_t g_dns_server;
 
-// Queue incoming commands so they run outside lwIP callbacks
+// Command queue
 typedef enum {
     CMD_NONE = 0,
-    CMD_FORWARD,
-    CMD_BACKWARD,
-    CMD_LEFT,
-    CMD_RIGHT,
-    CMD_CCW,
-    CMD_CW,
-    CMD_CREEP_FWD,
-    CMD_CREEP_BWD,
-    CMD_HI,
-    CMD_SHUFFLE,
-    CMD_HUMPING,
-    CMD_SQUADS,
-    CMD_SIT,
-    CMD_STANDUP,
-    CMD_LEGS_UP,
-    CMD_XPOSITION,
-    CMD_SHIFT1,
-    CMD_SHIFT2,
-    CMD_SHIFT3,
-    CMD_SHIFT4,
+    CMD_FORWARD, CMD_BACKWARD, CMD_LEFT, CMD_RIGHT,
+    CMD_CCW, CMD_CW, CMD_CREEP_FWD, CMD_CREEP_BWD,
+    CMD_HI, CMD_SHUFFLE, CMD_HUMPING, CMD_SQUADS,
+    CMD_SIT, CMD_STANDUP, CMD_LEGS_UP, CMD_XPOSITION,
+    CMD_SHIFT1, CMD_SHIFT2, CMD_SHIFT3, CMD_SHIFT4,
 } command_t;
 
 #define CMD_QUEUE_SIZE 16
@@ -74,26 +61,18 @@ static uint8_t g_cmd_tail = 0;
 
 static bool enqueue_command(command_t cmd) {
     uint8_t next_tail = (g_cmd_tail + 1) % CMD_QUEUE_SIZE;
-    if (next_tail == g_cmd_head) {
-        return false; // queue full
-    }
+    if (next_tail == g_cmd_head) return false;
     g_cmd_queue[g_cmd_tail] = cmd;
     g_cmd_tail = next_tail;
     return true;
 }
 
 static command_t dequeue_command(void) {
-    if (g_cmd_head == g_cmd_tail) {
-        return CMD_NONE;
-    }
+    if (g_cmd_head == g_cmd_tail) return CMD_NONE;
     command_t cmd = g_cmd_queue[g_cmd_head];
     g_cmd_head = (g_cmd_head + 1) % CMD_QUEUE_SIZE;
     return cmd;
 }
-
-// ============================================================================
-// Connection Management
-// ============================================================================
 
 static err_t tcp_close_client_connection(TCP_CONNECT_STATE_T *con_state, struct tcp_pcb *client_pcb, err_t close_err) {
     if (client_pcb) {
@@ -109,9 +88,7 @@ static err_t tcp_close_client_connection(TCP_CONNECT_STATE_T *con_state, struct 
             tcp_abort(client_pcb);
             close_err = ERR_ABRT;
         }
-        if (con_state) {
-            free(con_state);
-        }
+        if (con_state) free(con_state);
     }
     return close_err;
 }
@@ -124,113 +101,139 @@ static void tcp_server_close(TCP_SERVER_T *state) {
     }
 }
 
-// ============================================================================
-// Enhanced Web Interface with Better UX
-// ============================================================================
-
+// Compact Web Interface with Sensor Data
 static const char HOME_PAGE[] =
-"<html><head>"
+"<!DOCTYPE html><html><head>"
 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
 "<style>"
-"body{background:#0b1117;color:#e8eef4;font-family:'Segoe UI',sans-serif;margin:0;padding:20px;}"
-".wrap{max-width:760px;margin:0 auto;}"
-"h1{margin:0 0 16px;font-size:28px;color:#7bd7ff;}"
-".card{background:#111824;border:1px solid #1e2a38;border-radius:14px;padding:16px;margin-bottom:16px;box-shadow:0 10px 30px rgba(0,0,0,.35);}"
-".card h2{margin:0 0 12px;font-size:18px;color:#9ad2ff;}"
-".dpad{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;align-items:stretch;}"
-".actions{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;}"
-".poses{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;}"
-"button{background:#1e2b39;color:#e8eef4;border:1px solid #2f3d52;border-radius:10px;font-size:17px;font-weight:600;padding:16px;cursor:pointer;transition:transform .05s ease,background .15s ease;}"
-"button:active{background:#304357;transform:translateY(1px);}"
-".sm{font-size:15px;padding:12px 14px;}"
+"*{margin:0;padding:0;box-sizing:border-box}"
+"body{background:#111;color:#eee;font-family:Arial,sans-serif;padding:10px}"
+".card{background:#222;border-radius:8px;padding:12px;margin-bottom:10px}"
+"h2{font-size:16px;color:#5af;margin-bottom:8px}"
+".sensors{display:flex;gap:8px;margin-bottom:8px}"
+".sensor{flex:1;background:#333;border-radius:6px;padding:8px;text-align:center}"
+".val{font-size:24px;font-weight:bold;color:#5af}"
+".lbl{font-size:11px;color:#aaa}"
+".mode{display:flex;align-items:center;justify-content:space-between;gap:10px}"
+".pill{background:#333;border:1px solid #444;color:#5af;border-radius:999px;padding:6px 10px;font-size:12px}"
+".dpad{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px}"
+".acts{display:grid;grid-template-columns:1fr 1fr;gap:8px}"
+"button{background:#444;color:#fff;border:none;border-radius:6px;padding:14px;font-size:15px;cursor:pointer}"
+"button:active{background:#666}"
 "</style>"
 "</head><body>"
-"<div class='wrap'>"
-"<h1>Quadruped Control</h1>"
 "<div class='card'>"
-"<h2>Movement</h2>"
+"<h2>Sensors</h2>"
+"<div class='sensors'>"
+"<div class='sensor'><div class='lbl'>Pitch</div><div class='val' id='p'>--</div><div class='lbl'>deg</div></div>"
+"<div class='sensor'><div class='lbl'>Distance</div><div class='val' id='d'>--</div><div class='lbl'>cm</div></div>"
+"<div class='sensor'><div class='lbl'>Temp</div><div class='val' id='t'>--</div><div class='lbl'>F</div></div>"
+"</div>"
+"</div>"
+"<div class='card'>"
+"<h2>Mode</h2>"
+"<div class='mode'>"
+"<div><div class='lbl'>Current</div><div class='val' id='mode_lbl'>WiFi Control</div><div class='lbl'>Switch to run scan/approach routine</div></div>"
+"<button id='mode_btn' onclick=\"toggleMode()\">Switch to Scan</button>"
+"</div>"
+"</div>"
+"<div class='card'>"
+"<h2>Move</h2>"
 "<div class='dpad'>"
 "<div></div><button onclick=\"c('forward')\">&#9650;</button><div></div>"
 "<button onclick=\"c('left')\">&#9664;</button><div></div><button onclick=\"c('right')\">&#9654;</button>"
 "<div></div><button onclick=\"c('backward')\">&#9660;</button><div></div>"
 "</div>"
-"<div class='actions'>"
-"<button onclick=\"c('ccw')\">Rotate CCW</button>"
-"<button onclick=\"c('cw')\">Rotate CW</button>"
-"<button onclick=\"c('creep_forward')\">Creep Forward</button>"
-"<button onclick=\"c('creep_backward')\">Creep Backward</button>"
+"<div class='acts'>"
+"<button onclick=\"c('ccw')\">CCW</button>"
+"<button onclick=\"c('cw')\">CW</button>"
 "</div>"
 "</div>"
 "<div class='card'>"
-"<h2>Poses & Tricks</h2>"
-"<div class='poses'>"
+"<h2>Actions</h2>"
+"<div class='acts'>"
 "<button onclick=\"c('hi')\">Hi</button>"
-"<button onclick=\"c('shuffle')\">Shuffle</button>"
-"<button onclick=\"c('humping')\">Humping</button>"
-"<button onclick=\"c('squads')\">Squads</button>"
 "<button onclick=\"c('sit')\">Sit</button>"
-"<button onclick=\"c('standup')\">Stand Up</button>"
-"<button onclick=\"c('legs_up')\">Legs Up</button>"
-"<button onclick=\"c('xposition')\">Neutral X</button>"
-"<button onclick=\"c('shift1')\">Shift 1</button>"
-"<button onclick=\"c('shift2')\">Shift 2</button>"
-"<button onclick=\"c('shift3')\">Shift 3</button>"
-"<button onclick=\"c('shift4')\">Shift 4</button>"
-"</div>"
-"</div>"
-"<div class='card'>"
-"<h2>LED</h2>"
-"<div class='actions'>"
-"<button class='sm' onclick=\"l(1)\">LED On</button>"
-"<button class='sm' onclick=\"l(0)\">LED Off</button>"
-"</div>"
+"<button onclick=\"c('standup')\">Stand</button>"
+"<button onclick=\"c('shuffle')\">Shuffle</button>"
+"<button onclick=\"l(1)\">LED On</button>"
+"<button onclick=\"l(0)\">LED Off</button>"
 "</div>"
 "</div>"
 "<script>"
-"function c(d){fetch('/cmd?dir='+d).catch(()=>{});}"
-"function l(v){fetch('/led?state='+v).catch(()=>{});}"
+"let modeId=0;"
+"function c(d){fetch('/cmd?dir='+d)}"
+"function l(v){fetch('/led?state='+v)}"
+"function toggleMode(){const n=modeId===1?0:1;fetch('/mode?value='+n).then(()=>s(n));}"
+"function s(m){modeId=m;const l=document.getElementById('mode_lbl');const b=document.getElementById('mode_btn');if(!l||!b)return;l.textContent=m===1?'Scan + Approach':'WiFi Control';b.textContent=m===1?'Switch to WiFi':'Switch to Scan';}"
+"function u(){"
+"fetch('/sensors').then(r=>r.json()).then(d=>{"
+"document.getElementById('p').textContent=d.pv?d.pitch.toFixed(1):'--';"
+"document.getElementById('d').textContent=d.dv?d.dist:'--';"
+"document.getElementById('t').textContent=d.tv?d.temp_f.toFixed(1):'--';"
+"if(typeof d.mode!=='undefined')s(d.mode);"
+"}).catch(e=>console.log(e))}"
+"setInterval(u,1000);u()"
 "</script>"
 "</body></html>";
 
-// ============================================================================
-// Request Handler
-// ============================================================================
-
 static int test_server_content(const char *request, const char *params, char *result, size_t max_result_len) {
     
-    // iOS Captive Portal Detection - serve FULL control page
-    // This makes iOS show the captive portal popup with our interface
+    // iOS Captive Portal
     if (strcmp(request, "/hotspot-detect.html") == 0) {
         return snprintf(result, max_result_len, "%s", HOME_PAGE);
     }
     
-    // Android Captive Portal Detection
+    // Android Captive Portal
     if (strcmp(request, "/generate_204") == 0) {
-        // Return empty response with 204 status (handled differently below)
-        return -1; // Special flag for 204 No Content
+        return -1;
     }
     
-    // Other captive portal checks - serve home page
     if (strcmp(request, "/connecttest.txt") == 0 ||
         strcmp(request, "/success.txt") == 0 ||
         strcmp(request, "/ncsi.txt") == 0 ||
         strcmp(request, "/connect") == 0) {
-        // Serve the full home page
         return snprintf(result, max_result_len, "%s", HOME_PAGE);
     }
     
-    // Serve Control UI
+    // Main page
     if (strcmp(request, "/") == 0 || strcmp(request, "/index") == 0 ||
         strcmp(request, "/index.html") == 0) {
         return snprintf(result, max_result_len, "%s", HOME_PAGE);
     }
     
-    // Handle favicon request (prevents "Unknown command" error)
+    // Favicon
     if (strcmp(request, "/favicon.ico") == 0) {
-        return 0; // Just redirect, we don't have a favicon
+        return 0;
     }
 
-    // Movement Commands with feedback
+    // NEW: Sensor data endpoint
+    if (strcmp(request, "/sensors") == 0) {
+        return snprintf(result, max_result_len, 
+                       "{\"pitch\":%.1f,\"pv\":%d,\"dist\":%d,\"dv\":%d,\"temp_f\":%.1f,\"temp_c\":%.1f,\"tv\":%d,\"mode\":%d}",
+                       g_sensor_data.pitch,
+                       g_sensor_data.pitch_valid ? 1 : 0,
+                       g_sensor_data.distance,
+                       g_sensor_data.distance_valid ? 1 : 0,
+                       g_sensor_data.temp_f,
+                       g_sensor_data.temp_c,
+                       g_sensor_data.temp_valid ? 1 : 0,
+                       (int)g_robot_mode);
+    }
+
+    // Mode endpoint
+    if (strncmp(request, "/mode", 5) == 0) {
+        int requested = (int)g_robot_mode;
+        if (params && sscanf(params, "value=%d", &requested) == 1) {
+            if (requested == ROBOT_MODE_WIFI_CONTROL || requested == ROBOT_MODE_SCAN_APPROACH) {
+                g_robot_mode = (robot_mode_t)requested;
+            }
+        }
+        const char *label = (g_robot_mode == ROBOT_MODE_SCAN_APPROACH) ? "scan" : "wifi";
+        return snprintf(result, max_result_len, "mode:%s", label);
+    }
+
+    // Movement commands
     if (strncmp(request, "/cmd", 4) == 0) {
         char dir[32] = {0};
         const char *response = "Unknown command";
@@ -261,11 +264,7 @@ static int test_server_content(const char *request, const char *params, char *re
             else if (strcmp(dir, "shift4") == 0) cmd = CMD_SHIFT4;
 
             if (cmd != CMD_NONE) {
-                if (enqueue_command(cmd)) {
-                    response = "Command queued";
-                } else {
-                    response = "Command queue full, try again";
-                }
+                response = enqueue_command(cmd) ? "Command queued" : "Queue full";
             }
             
             g_tcp_state.command_count++;
@@ -286,14 +285,10 @@ static int test_server_content(const char *request, const char *params, char *re
         return snprintf(result, max_result_len, "Invalid LED state");
     }
 
-    // Unknown - redirect to home
     return 0;
 }
 
-// ============================================================================
-// TCP Server Callbacks
-// ============================================================================
-
+// TCP callbacks remain the same
 static err_t tcp_server_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
     TCP_CONNECT_STATE_T *con_state = (TCP_CONNECT_STATE_T*)arg;
     con_state->sent_len += len;
@@ -305,19 +300,15 @@ static err_t tcp_server_sent(void *arg, struct tcp_pcb *pcb, u16_t len) {
 
 err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err) {
     TCP_CONNECT_STATE_T *con_state = (TCP_CONNECT_STATE_T*)arg;
-    if (!p) {
-        return tcp_close_client_connection(con_state, pcb, ERR_OK);
-    }
+    if (!p) return tcp_close_client_connection(con_state, pcb, ERR_OK);
     
     assert(con_state && con_state->pcb == pcb);
     
     if (p->tot_len > 0) {
-        // Copy request into buffer
         pbuf_copy_partial(p, con_state->headers, 
                          p->tot_len > sizeof(con_state->headers) - 1 ? 
                          sizeof(con_state->headers) - 1 : p->tot_len, 0);
 
-        // Handle GET request
         if (strncmp(HTTP_GET, con_state->headers, sizeof(HTTP_GET) - 1) == 0) {
             char *request = con_state->headers + sizeof(HTTP_GET);
             char *params = strchr(request, '?');
@@ -331,20 +322,16 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
                 if (space) *space = 0;
             }
 
-            // Generate content
             con_state->result_len = test_server_content(request, params, 
                                                         con_state->result, 
                                                         sizeof(con_state->result));
 
-            // Check buffer space
             if (con_state->result_len > sizeof(con_state->result) - 1) {
                 DEBUG_printf("Result too large: %d\n", con_state->result_len);
                 return tcp_close_client_connection(con_state, pcb, ERR_CLSD);
             }
 
-            // Generate response
             if (con_state->result_len == -1) {
-                // Special case: 204 No Content for Android captive portal
                 con_state->header_len = snprintf(con_state->headers, 
                                                 sizeof(con_state->headers), 
                                                 "HTTP/1.1 204 No Content\r\n\r\n");
@@ -355,29 +342,43 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
                                                 HTTP_RESPONSE_HEADERS,
                                                 200, con_state->result_len);
             } else {
-                // Redirect to home page
                 con_state->header_len = snprintf(con_state->headers, 
                                                 sizeof(con_state->headers), 
                                                 HTTP_RESPONSE_REDIRECT,
                                                 ipaddr_ntoa(con_state->gw));
             }
 
-            // Send headers
-            con_state->sent_len = 0;
-            err_t err = tcp_write(pcb, con_state->headers, con_state->header_len, 0);
-            if (err != ERR_OK) {
-                DEBUG_printf("Header write failed: %d\n", err);
-                return tcp_close_client_connection(con_state, pcb, err);
+            // Check if we have enough send buffer space
+            u16_t available = tcp_sndbuf(pcb);
+            u16_t needed = con_state->header_len + con_state->result_len;
+            
+            if (available < needed) {
+                DEBUG_printf("Not enough buffer space: need %d, have %d\n", needed, available);
+                // Wait for buffer space - poll callback will retry
+                tcp_recved(pcb, p->tot_len);
+                pbuf_free(p);
+                return ERR_OK;
             }
 
-            // Send body
-            if (con_state->result_len) {
-                err = tcp_write(pcb, con_state->result, con_state->result_len, 0);
-                if (err != ERR_OK) {
-                    DEBUG_printf("Body write failed: %d\n", err);
-                    return tcp_close_client_connection(con_state, pcb, err);
+            // Write headers
+            con_state->sent_len = 0;
+            err_t write_err = tcp_write(pcb, con_state->headers, con_state->header_len, TCP_WRITE_FLAG_COPY);
+            if (write_err != ERR_OK) {
+                DEBUG_printf("Header write failed: %d\n", write_err);
+                return tcp_close_client_connection(con_state, pcb, write_err);
+            }
+
+            // Write body if present
+            if (con_state->result_len > 0) {
+                write_err = tcp_write(pcb, con_state->result, con_state->result_len, TCP_WRITE_FLAG_COPY);
+                if (write_err != ERR_OK) {
+                    DEBUG_printf("Body write failed: %d\n", write_err);
+                    return tcp_close_client_connection(con_state, pcb, write_err);
                 }
             }
+            
+            // Flush the output
+            tcp_output(pcb);
         }
         tcp_recved(pcb, p->tot_len);
     }
@@ -405,7 +406,6 @@ static err_t tcp_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err)
         return ERR_VAL;
     }
 
-    // Allocate connection state
     TCP_CONNECT_STATE_T *con_state = calloc(1, sizeof(TCP_CONNECT_STATE_T));
     if (!con_state) {
         DEBUG_printf("Out of memory\n");
@@ -415,7 +415,6 @@ static err_t tcp_server_accept(void *arg, struct tcp_pcb *client_pcb, err_t err)
     con_state->pcb = client_pcb;
     con_state->gw = &state->gw;
 
-    // Setup callbacks
     tcp_arg(client_pcb, con_state);
     tcp_sent(client_pcb, tcp_server_sent);
     tcp_recv(client_pcb, tcp_server_recv);
@@ -455,10 +454,6 @@ static bool tcp_server_open(void *arg, const char *ap_name) {
     return true;
 }
 
-// ============================================================================
-// Public API
-// ============================================================================
-
 bool wifi_ap_start(const char *ap_name, const char *password) {
     if (cyw43_arch_init()) {
         DEBUG_printf("CYW43 init failed\n");
@@ -467,7 +462,6 @@ bool wifi_ap_start(const char *ap_name, const char *password) {
 
     cyw43_arch_enable_ap_mode(ap_name, password, CYW43_AUTH_WPA2_AES_PSK);
 
-    // Configure network
     ip4_addr_t mask;
     memset(&g_tcp_state, 0, sizeof(g_tcp_state));
     
@@ -479,7 +473,6 @@ bool wifi_ap_start(const char *ap_name, const char *password) {
     mask.addr = PP_HTONL(CYW43_DEFAULT_IP_MASK);
 #endif
 
-    // Start services
     dhcp_server_init(&g_dhcp_server, &g_tcp_state.gw, &mask);
     dns_server_init(&g_dns_server, &g_tcp_state.gw);
 
@@ -497,7 +490,6 @@ void wifi_ap_background(void) {
     cyw43_arch_wait_for_work_until(make_timeout_time_ms(1));
 #endif
 
-    // Execute one queued command per call to avoid blocking networking callbacks
     command_t cmd = dequeue_command();
     switch (cmd) {
         case CMD_FORWARD:      forward(); break;
