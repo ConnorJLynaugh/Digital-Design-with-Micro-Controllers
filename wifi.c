@@ -128,7 +128,7 @@ static const char HOME_PAGE[] =
 "<div class='card'>"
 "<h2>Sensors</h2>"
 "<div class='sensors'>"
-"<div class='sensor'><div class='lbl'>Pitch</div><div class='val' id='p'>--</div><div class='lbl'>deg</div></div>"
+"<div class='sensor'><div class='lbl'>Heading</div><div class='val' id='h'>--</div><div class='lbl'>deg</div></div>"
 "<div class='sensor'><div class='lbl'>Distance</div><div class='val' id='d'>--</div><div class='lbl'>cm</div></div>"
 "<div class='sensor'><div class='lbl'>Temp</div><div class='val' id='t'>--</div><div class='lbl'>F</div></div>"
 "</div>"
@@ -172,7 +172,7 @@ static const char HOME_PAGE[] =
 
 "function u(){"
 "fetch('/sensors').then(r=>r.json()).then(d=>{"
-"document.getElementById('p').textContent=d.pv?d.pitch.toFixed(1):'--';"
+"document.getElementById('h').textContent=d.hv?d.heading.toFixed(1):'--';"
 "document.getElementById('d').textContent=d.dv?d.dist:'--';"
 "document.getElementById('t').textContent=d.tv?d.temp_f.toFixed(1):'--';"
 
@@ -214,9 +214,9 @@ static int test_server_content(const char *request, const char *params, char *re
     // NEW: Sensor data endpoint
     if (strcmp(request, "/sensors") == 0) {
         return snprintf(result, max_result_len, 
-                       "{\"pitch\":%.1f,\"pv\":%d,\"dist\":%d,\"dv\":%d,\"temp_f\":%.1f,\"temp_c\":%.1f,\"tv\":%d}",
-                       g_sensor_data.pitch,
-                       g_sensor_data.pitch_valid ? 1 : 0,
+                       "{\"heading\":%.1f,\"hv\":%d,\"dist\":%d,\"dv\":%d,\"temp_f\":%.1f,\"temp_c\":%.1f,\"tv\":%d}",
+                       g_sensor_data.heading,
+                       g_sensor_data.heading_valid ? 1 : 0,
                        g_sensor_data.distance,
                        g_sensor_data.distance_valid ? 1 : 0,
                        g_sensor_data.temp_f,

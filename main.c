@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <math.h>
 #include "pico/stdlib.h"
 #include "pico/error.h"
 #include "hardware/i2c.h"
@@ -43,6 +44,9 @@ static bool g_found_temp = false;
 static absolute_time_t g_last_sensor_update;
 static inline void refresh_sensor_data(void);
 volatile robot_mode_t g_robot_mode = ROBOT_MODE_WIFI_CONTROL;
+static float g_gyro_heading = 0.0f;
+static uint64_t g_last_gyro_time = 0;
+#define GYRO_Z_BIAS 2.5f
 
 static const char* mode_to_string(robot_mode_t mode) {
     return (mode == ROBOT_MODE_SCAN_APPROACH) ? "Scan/Approach" : "WiFi Control";
@@ -158,29 +162,52 @@ void update_sensor_data(bool found_imu, bool found_lidar, bool found_temp) {
         g_sensor_data.temp_valid = false;
     }
 
-    // Update pitch
+    // Update heading from integrated gyro
     if (found_imu) {
-        // Local arrays to ensure fresh data
-        fix15 local_accel[3], local_gyro[3];
-        mpu6050_read_raw(local_accel, local_gyro);
-        
-        float ax = fix2float15(local_accel[0]);
-        float ay = fix2float15(local_accel[1]);
-        float az = fix2float15(local_accel[2]);
-        
-        // Calculate pitch (rotation around Y-axis)
-        g_sensor_data.pitch = atan2f(-ax, sqrtf(ay*ay + az*az)) * 180.0f / 3.14159f;
-        g_sensor_data.pitch_valid = true;
+        g_sensor_data.heading = g_gyro_heading;
+        g_sensor_data.heading_valid = true;
     } else {
-        g_sensor_data.pitch_valid = false;
+        g_sensor_data.heading_valid = false;
     }
 }
 
-// Helper: refresh sensor data if interval elapsed
+// Integrate gyro Z to maintain heading with bias and deadband compensation
+static inline void update_heading_from_gyro(void) {
+    if (!g_found_imu) return;
+
+    uint64_t now = time_us_64();
+    if (g_last_gyro_time == 0) {
+        g_last_gyro_time = now;
+        return;
+    }
+
+    float dt = (now - g_last_gyro_time) / 1000000.0f;
+    if (dt < 0.01f) return; // avoid tiny steps
+
+    mpu6050_read_raw(acceleration, gyro);
+    float gz = fix2float15(gyro[2]);
+    gz += GYRO_Z_BIAS;
+    if (fabsf(gz) < 0.5f) gz = 0.0f; // deadband
+
+    g_gyro_heading += gz * dt;
+    while (g_gyro_heading < 0) g_gyro_heading += 360.0f;
+    while (g_gyro_heading >= 360.0f) g_gyro_heading -= 360.0f;
+
+    g_last_gyro_time = now;
+}
+
+// Helper
 static inline void refresh_sensor_data(void) {
+    // Keep heading fresh even when the main loop is blocked
+    update_heading_from_gyro();
+
     if (absolute_time_diff_us(g_last_sensor_update, get_absolute_time()) > 500000) {
         update_sensor_data(g_found_imu, g_found_lidar, g_found_temp);
         g_last_sensor_update = get_absolute_time();
+    } else if (g_found_imu) {
+        // Still publish the latest heading even if we skip a full sensor refresh
+        g_sensor_data.heading = g_gyro_heading;
+        g_sensor_data.heading_valid = true;
     }
 }
 
@@ -363,6 +390,8 @@ int main(void) {
                fix2float15(gyro[0]), 
                fix2float15(gyro[1]), 
                fix2float15(gyro[2]));
+        g_gyro_heading = 0.0f;
+        g_last_gyro_time = time_us_64();
     } else {
         printf("⚠️  MPU6050 not found - IMU features disabled\n\n");
     }
@@ -604,10 +633,22 @@ int main(void) {
                         printf("Orientation:\n");
                         printf("   Roll:  %7.2f°\n", roll);
                         printf("   Pitch: %7.2f°\n", pitch);
+                        printf("   Heading (Z): %7.2f°\n", g_gyro_heading);
                         
                         printf("=================================\n\n");
                     } else {
                         printf("⚠️  IMU not available\n\n");
+                    }
+                    break;
+
+                case 'z':
+                case 'Z':
+                    if (g_found_imu) {
+                        g_gyro_heading = 0.0f;
+                        g_last_gyro_time = time_us_64();
+                        printf("Heading reset to 0°\n");
+                    } else {
+                        printf("⚠️  IMU not available\n");
                     }
                     break;
                     
@@ -616,6 +657,9 @@ int main(void) {
                     break;
             }
         }
+
+        // Maintain heading integration
+        update_heading_from_gyro();
 
         // Update sensor data periodically (every 500ms) for WiFi display
         refresh_sensor_data();
