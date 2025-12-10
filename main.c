@@ -8,19 +8,27 @@
 #include "movement_library.h"
 #include "tfluna_i2c.h"
 #include "mlx90614.h"
+#include "mpu6050.h"
 
 #include "wifi.h"
 #include "pico/cyw43_arch.h"
 
-// I2C configuration
-#define I2C_PORT i2c0
-#define I2C_SDA_PIN 4
-#define I2C_SCL_PIN 5
+// I2C configuration for main devices
+#define I2C_PORT i2c1
+#define I2C_SDA_PIN 2
+#define I2C_SCL_PIN 3
 #define I2C_FREQ 100000
+
+// Separate I2C for MLX90614 temperature sensor
+#define I2C_TEMP_PORT i2c0
+#define I2C_TEMP_SDA_PIN 16
+#define I2C_TEMP_SCL_PIN 17
 
 // Sensors
 tfluna_t lidar_sensor;
 mlx90614_t temp_sensor;
+fix15 acceleration[3], gyro[3];
+//PCA9685 pwm;  
 
 void print_menu(void) {
     printf("\n=== Quadruped Robot Control Menu ===\n");
@@ -44,8 +52,9 @@ void print_menu(void) {
     printf("  i - Sit\n");
     printf("  u - Stand Up\n");
     printf("  l - Legs Up\n");
-    printf("\nLiDAR / Temp Commands:\n");
+    printf("\nSensor Commands:\n");
     printf("  r - Read Distance & Temperature\n");
+    printf("  y - Read IMU (Accelerometer & Gyroscope)\n");
     printf("\nOther:\n");
     printf("  m - Show this menu\n");
     printf("  p - Exit program\n");
@@ -71,26 +80,37 @@ int main(void) {
     
     printf("\n\n=== Quadruped Robot Starting ===\n");
     printf("I2C Configuration:\n");
-    printf("  SDA Pin: GPIO %d\n", I2C_SDA_PIN);
-    printf("  SCL Pin: GPIO %d\n", I2C_SCL_PIN);
-    printf("  I2C Frequency: %d Hz\n", I2C_FREQ);
-    printf("  PCA9685 Address: 0x%02X\n\n", PCA9685_DEFAULT_ADDRESS);
-    printf("  TF-Luna Address: 0x%02X\n\n", TFLUNA_DEFAULT_ADDR);
-    printf("  MLX90614 Address: 0x%02X\n\n", MLX90614_DEFAULT_ADDR);
+    printf("  Main I2C (GPIO 2/3):\n");
+    printf("    SDA Pin: GPIO %d, SCL Pin: GPIO %d\n", I2C_SDA_PIN, I2C_SCL_PIN);
+    printf("    PCA9685: 0x%02X, TF-Luna: 0x%02X, MPU6050: 0x68\n", 
+           PCA9685_DEFAULT_ADDRESS, TFLUNA_DEFAULT_ADDR);
+    printf("  Temp Sensor I2C (GPIO 16/17):\n");
+    printf("    SDA Pin: GPIO %d, SCL Pin: GPIO %d\n", I2C_TEMP_SDA_PIN, I2C_TEMP_SCL_PIN);
+    printf("    MLX90614: 0x%02X\n\n", MLX90614_DEFAULT_ADDR);
     
-    printf("Initializing I2C...\n");
-    // Initialize I2C
+    printf("Initializing main I2C (GPIO 2/3)...\n");
+    // Initialize main I2C
     i2c_init(I2C_PORT, I2C_FREQ);
     gpio_set_function(I2C_SDA_PIN, GPIO_FUNC_I2C);
     gpio_set_function(I2C_SCL_PIN, GPIO_FUNC_I2C);
     gpio_pull_up(I2C_SDA_PIN);
     gpio_pull_up(I2C_SCL_PIN);
     
-    // Scan I2C bus
-    printf("Scanning I2C bus (this may take a moment)...\n");
+    printf("Initializing temp sensor I2C (GPIO 16/17)...\n");
+    // Initialize temp sensor I2C
+    i2c_init(I2C_TEMP_PORT, I2C_FREQ);
+    gpio_set_function(I2C_TEMP_SDA_PIN, GPIO_FUNC_I2C);
+    gpio_set_function(I2C_TEMP_SCL_PIN, GPIO_FUNC_I2C);
+    gpio_pull_up(I2C_TEMP_SDA_PIN);
+    gpio_pull_up(I2C_TEMP_SCL_PIN);
+    
+    // Scan main I2C bus
+    printf("\nScanning main I2C bus (GPIO 2/3)...\n");
     bool found = false;
     bool found_lidar = false;
-    bool found_temp = false;
+    bool found_imu = false;
+    bool found_pca = false;
+
     for (int addr = 0; addr < 128; addr++) {
         uint8_t data;
         int ret = i2c_read_timeout_us(I2C_PORT, addr, &data, 1, false, 10000);
@@ -99,17 +119,47 @@ int main(void) {
             if (addr == TFLUNA_DEFAULT_ADDR) {
                 printf(" (TF-Luna LiDAR)");
                 found_lidar = true;
-            } else if (addr == MLX90614_DEFAULT_ADDR) {
-                printf(" (MLX90614 IR Thermometer)");
-                found_temp = true;
+            } else if (addr == 0x68) {
+                printf(" (MPU6050 IMU)");
+                found_imu = true;
+            } else if (addr == PCA9685_DEFAULT_ADDRESS) {
+                printf(" (PCA9685 Servo Driver)");
+                found_pca = true;
             }
             printf("\n");
             found = true;
         }
     }
+
     if (!found) {
-        printf("  No I2C devices found! Check wiring and power.\n");
+        printf("  No devices found on main I2C bus\n");
     }
+
+    if (!found_pca) {
+        printf("⚠️  PCA9685 NOT detected during I2C scan at 0x%02X\n", PCA9685_DEFAULT_ADDRESS);
+    } else {
+        printf("✓ PCA9685 detected on the I2C bus at 0x%02X\n", PCA9685_DEFAULT_ADDRESS);
+    }
+
+    // Scan temp sensor I2C bus
+    printf("\nScanning temp sensor I2C bus (GPIO 16/17)...\n");
+    bool found_temp = false;
+    for (int addr = 0; addr < 128; addr++) {
+        uint8_t data;
+        int ret = i2c_read_timeout_us(I2C_TEMP_PORT, addr, &data, 1, false, 10000);
+        if (ret > 0) {
+            printf("  Found device at address 0x%02X", addr);
+            if (addr == MLX90614_DEFAULT_ADDR) {
+                printf(" (MLX90614 IR Thermometer)");
+                found_temp = true;
+            }
+            printf("\n");
+        }
+    }
+    if (!found_temp) {
+        printf("  No devices found on temp sensor I2C bus\n");
+    }
+    printf("\n");
     
     // Initialize PCA9685
     printf("Initializing PCA9685...\n");
@@ -134,28 +184,47 @@ int main(void) {
             found_lidar = false;
         }
     } else {
-        printf("⚠️  TF-Luna not found - LiDAR features disabled\n");
-        printf("   Make sure Pin 5 (Mode) is connected to GND!\n\n");
+        printf("⚠️  TF-Luna not found - LiDAR features disabled\n\n");
     }
 
     // Initialize MLX90614 IR Thermometer
     if (found_temp) {
         printf("Initializing MLX90614 IR Thermometer...\n");
-        if (mlx90614_init(&temp_sensor, I2C_PORT, MLX90614_DEFAULT_ADDR)) {
+        if (mlx90614_init(&temp_sensor, I2C_TEMP_PORT, MLX90614_DEFAULT_ADDR)) {
             printf("✓ MLX90614 initialized successfully!\n");
 
             float obj_temp, amb_temp;
             if (mlx90614_read_both_temps(&temp_sensor, &obj_temp, &amb_temp)) {
-                printf("  Object temp: %.2f°C | Ambient: %.2f°C\n", obj_temp, amb_temp);
+                printf("  Object temp: %.2f°C | Ambient: %.2f°C\n\n", obj_temp, amb_temp);
             }
         } else {
-            printf("✗ Failed to initialize MLX90614\n");
+            printf("✗ Failed to initialize MLX90614\n\n");
             found_temp = false;
         }
     } else {
-        printf("⚠️  MLX90614 not found - temperature measurement disabled\n");
+        printf("⚠️  MLX90614 not found - temperature measurement disabled\n\n");
     }
-    printf("\n");
+
+    // Initialize MPU6050 IMU
+    if (found_imu) {
+        printf("Initializing MPU6050 IMU...\n");
+        mpu6050_reset();
+        sleep_ms(100);
+        
+        // Test read
+        mpu6050_read_raw(acceleration, gyro);
+        printf("✓ MPU6050 initialized successfully!\n");
+        printf("  Accel X: %.2f g, Y: %.2f g, Z: %.2f g\n", 
+               fix2float15(acceleration[0]), 
+               fix2float15(acceleration[1]), 
+               fix2float15(acceleration[2]));
+        printf("  Gyro X: %.2f °/s, Y: %.2f °/s, Z: %.2f °/s\n\n",
+               fix2float15(gyro[0]), 
+               fix2float15(gyro[1]), 
+               fix2float15(gyro[2]));
+    } else {
+        printf("⚠️  MPU6050 not found - IMU features disabled\n\n");
+    }
     
     printf("Please wait for 10 seconds...\n");
     stand_up();
@@ -352,6 +421,50 @@ int main(void) {
                     }
 
                     printf("====================================\n\n");
+                    break;
+
+                case 'y':
+                case 'Y':
+                    if (found_imu) {
+                        printf("\n========== IMU READING ==========\n");
+                        
+                        // Read raw accelerometer and gyroscope data
+                        mpu6050_read_raw(acceleration, gyro);
+                        
+                        // Display accelerometer data (in g's)
+                        printf("Accelerometer (g):\n");
+                        printf("   X: %7.3f\n", fix2float15(acceleration[0]));
+                        printf("   Y: %7.3f\n", fix2float15(acceleration[1]));
+                        printf("   Z: %7.3f\n", fix2float15(acceleration[2]));
+                        
+                        printf("\n");
+                        
+                        // Display gyroscope data (in degrees/second)
+                        printf("Gyroscope (°/s):\n");
+                        printf("   X: %7.2f\n", fix2float15(gyro[0]));
+                        printf("   Y: %7.2f\n", fix2float15(gyro[1]));
+                        printf("   Z: %7.2f\n", fix2float15(gyro[2]));
+                        
+                        printf("\n");
+                        
+                        // Calculate and display roll/pitch
+                        float ax = fix2float15(acceleration[0]);
+                        float ay = fix2float15(acceleration[1]);
+                        float az = fix2float15(acceleration[2]);
+                        
+                        // Roll (rotation around X-axis)
+                        float roll = atan2f(ay, az) * 180.0f / 3.14159f;
+                        // Pitch (rotation around Y-axis)
+                        float pitch = atan2f(-ax, sqrtf(ay*ay + az*az)) * 180.0f / 3.14159f;
+                        
+                        printf("Orientation:\n");
+                        printf("   Roll:  %7.2f°\n", roll);
+                        printf("   Pitch: %7.2f°\n", pitch);
+                        
+                        printf("=================================\n\n");
+                    } else {
+                        printf("⚠️  IMU not available\n\n");
+                    }
                     break;
                     
                 default:
