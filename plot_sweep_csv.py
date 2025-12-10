@@ -60,7 +60,7 @@ def parse_rows(csv_path: Path, keep_zero: bool) -> Tuple[List[float], List[float
 def plot_sweep(angles: List[float], distances: List[float], temps: List[float]) -> None:
     theta = [math.radians(a) for a in angles]
     x = [d * math.sin(t) for d, t in zip(distances, theta)]
-    y = [d * math.cos(t) for d, t in zip(distances, theta)]
+    y = [-d * math.cos(t) for d, t in zip(distances, theta)]  # invert Y for top-down view
 
     temps_f = [(t * 9.0 / 5.0) + 32.0 for t in temps]
 

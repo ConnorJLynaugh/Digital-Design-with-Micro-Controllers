@@ -469,7 +469,7 @@ err_t tcp_server_recv(void *arg, struct tcp_pcb *pcb, struct pbuf *p, err_t err)
             con_state->sent_len = 0;
             err_t write_err = tcp_write(pcb, con_state->headers, con_state->header_len, TCP_WRITE_FLAG_COPY);
             if (write_err != ERR_OK) {
-                DEBUG_printf("Header write failed: %d\n", write_err);
+                //DEBUG_printf("Header write failed: %d\n", write_err);
                 return tcp_close_client_connection(con_state, pcb, write_err);
             }
 

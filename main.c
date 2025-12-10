@@ -44,6 +44,7 @@ static bool g_found_imu = false;
 static bool g_found_temp = false;
 static absolute_time_t g_last_sensor_update;
 static inline void refresh_sensor_data(void);
+static inline void update_heading_from_gyro(void);
 volatile robot_mode_t g_robot_mode = ROBOT_MODE_WIFI_CONTROL;
 static float g_gyro_heading = 0.0f;
 static uint64_t g_last_gyro_time = 0;
@@ -56,6 +57,8 @@ static float g_start_heading = 0.0f;
 static bool g_sweep_started = false;
 static float g_prev_heading = 0.0f;
 static float g_rotated_sum = 0.0f;
+static float g_heading_filt = 0.0f;
+static bool g_heading_filt_init = false;
 
 // Simple helpers to gather cleaner measurements during a sweep
 static uint16_t median_u16(uint16_t *vals, int n) {
@@ -101,18 +104,44 @@ static float read_temp_filtered(int samples) {
     return count ? (sum / count) : 0.0f;
 }
 
+static float smooth_heading(float raw_deg) {
+    const float alpha = 0.15f; // lower = smoother
+
+    if (!g_heading_filt_init) {
+        g_heading_filt = raw_deg;
+        g_heading_filt_init = true;
+        return raw_deg;
+    }
+
+    float delta = raw_deg - g_heading_filt;
+    while (delta < -180.0f) delta += 360.0f;
+    while (delta > 180.0f)  delta -= 360.0f;
+
+    g_heading_filt += alpha * delta;
+
+    while (g_heading_filt < 0.0f)   g_heading_filt += 360.0f;
+    while (g_heading_filt >= 360.0f) g_heading_filt -= 360.0f;
+
+    return g_heading_filt;
+}
+
 static void sweep_collect_sample_if_due(void) {
     if (!g_map.active) return;
+
+    // Ensure heading and sensors are fresh before sampling
+    refresh_sensor_data();
 
     uint64_t now_us = time_us_64();
     if ((now_us - g_last_collect) <= 10000) return; // ~100 Hz
 
     // Use same heading we publish to WiFi to keep displays consistent
-    float heading = g_sensor_data.heading_valid ? g_sensor_data.heading : g_gyro_heading;
-    while (heading < 0.0f) heading += 360.0f;
-    while (heading >= 360.0f) heading -= 360.0f;
+    // Use the best available heading (sensor_data if valid, else gyro)
+    float heading_raw = g_sensor_data.heading_valid ? g_sensor_data.heading : g_gyro_heading;
+    while (heading_raw < 0.0f) heading_raw += 360.0f;
+    while (heading_raw >= 360.0f) heading_raw -= 360.0f;
+    float heading = smooth_heading(heading_raw);
 
-    uint16_t dist = read_lidar_filtered(3);
+    uint16_t dist = read_lidar_filtered(5);
     float temp = read_temp_filtered(2);
 
     // Skip far/noisy points to keep plots focused
@@ -149,6 +178,7 @@ static void dump_map_csv_block(void) {
     printf("# sweep_csv_end\n\n");
 }
 
+// Not In Use
 static const char* mode_to_string(robot_mode_t mode) {
     return (mode == ROBOT_MODE_SCAN_APPROACH) ? "Scan/Approach" : "WiFi Control";
 }
@@ -347,6 +377,7 @@ void start_mapping_sweep(void) {
         g_last_collect = g_last_rotate = 0;
         g_prev_heading = g_gyro_heading;
         g_rotated_sum = 0.0f;
+        g_heading_filt_init = false;
     } else {
         printf("⚠️  Cannot start sweep - missing sensors:\n");
         if (!g_found_imu) printf("  - IMU not available\n");
@@ -545,11 +576,12 @@ int main(void) {
     
     printf("Please wait for 10 seconds...\n");
     stand_up();
+    hi();
     xposition();
     //setup_servos();
     printf("I am Ready!\n");
     
-    //print_menu();
+    print_menu();
     
     bool running = true;
     robot_mode_t last_mode = g_robot_mode;
