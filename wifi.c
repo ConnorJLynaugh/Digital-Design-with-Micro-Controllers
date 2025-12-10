@@ -114,8 +114,6 @@ static const char HOME_PAGE[] =
 ".sensor{flex:1;background:#333;border-radius:6px;padding:8px;text-align:center}"
 ".val{font-size:24px;font-weight:bold;color:#5af}"
 ".lbl{font-size:11px;color:#aaa}"
-".mode{display:flex;align-items:center;justify-content:space-between;gap:10px}"
-".pill{background:#333;border:1px solid #444;color:#5af;border-radius:999px;padding:6px 10px;font-size:12px}"
 ".dpad{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:8px}"
 ".acts{display:grid;grid-template-columns:1fr 1fr;gap:8px}"
 "button{background:#444;color:#fff;border:none;border-radius:6px;padding:14px;font-size:15px;cursor:pointer}"
@@ -128,13 +126,6 @@ static const char HOME_PAGE[] =
 "<div class='sensor'><div class='lbl'>Pitch</div><div class='val' id='p'>--</div><div class='lbl'>deg</div></div>"
 "<div class='sensor'><div class='lbl'>Distance</div><div class='val' id='d'>--</div><div class='lbl'>cm</div></div>"
 "<div class='sensor'><div class='lbl'>Temp</div><div class='val' id='t'>--</div><div class='lbl'>F</div></div>"
-"</div>"
-"</div>"
-"<div class='card'>"
-"<h2>Mode</h2>"
-"<div class='mode'>"
-"<div><div class='lbl'>Current</div><div class='val' id='mode_lbl'>WiFi Control</div><div class='lbl'>Switch to run scan/approach routine</div></div>"
-"<button id='mode_btn' onclick=\"toggleMode()\">Switch to Scan</button>"
 "</div>"
 "</div>"
 "<div class='card'>"
@@ -161,17 +152,13 @@ static const char HOME_PAGE[] =
 "</div>"
 "</div>"
 "<script>"
-"let modeId=0;"
 "function c(d){fetch('/cmd?dir='+d)}"
 "function l(v){fetch('/led?state='+v)}"
-"function toggleMode(){const n=modeId===1?0:1;fetch('/mode?value='+n).then(()=>s(n));}"
-"function s(m){modeId=m;const l=document.getElementById('mode_lbl');const b=document.getElementById('mode_btn');if(!l||!b)return;l.textContent=m===1?'Scan + Approach':'WiFi Control';b.textContent=m===1?'Switch to WiFi':'Switch to Scan';}"
 "function u(){"
 "fetch('/sensors').then(r=>r.json()).then(d=>{"
 "document.getElementById('p').textContent=d.pv?d.pitch.toFixed(1):'--';"
 "document.getElementById('d').textContent=d.dv?d.dist:'--';"
 "document.getElementById('t').textContent=d.tv?d.temp_f.toFixed(1):'--';"
-"if(typeof d.mode!=='undefined')s(d.mode);"
 "}).catch(e=>console.log(e))}"
 "setInterval(u,1000);u()"
 "</script>"
@@ -210,27 +197,14 @@ static int test_server_content(const char *request, const char *params, char *re
     // NEW: Sensor data endpoint
     if (strcmp(request, "/sensors") == 0) {
         return snprintf(result, max_result_len, 
-                       "{\"pitch\":%.1f,\"pv\":%d,\"dist\":%d,\"dv\":%d,\"temp_f\":%.1f,\"temp_c\":%.1f,\"tv\":%d,\"mode\":%d}",
+                       "{\"pitch\":%.1f,\"pv\":%d,\"dist\":%d,\"dv\":%d,\"temp_f\":%.1f,\"temp_c\":%.1f,\"tv\":%d}",
                        g_sensor_data.pitch,
                        g_sensor_data.pitch_valid ? 1 : 0,
                        g_sensor_data.distance,
                        g_sensor_data.distance_valid ? 1 : 0,
                        g_sensor_data.temp_f,
                        g_sensor_data.temp_c,
-                       g_sensor_data.temp_valid ? 1 : 0,
-                       (int)g_robot_mode);
-    }
-
-    // Mode endpoint
-    if (strncmp(request, "/mode", 5) == 0) {
-        int requested = (int)g_robot_mode;
-        if (params && sscanf(params, "value=%d", &requested) == 1) {
-            if (requested == ROBOT_MODE_WIFI_CONTROL || requested == ROBOT_MODE_SCAN_APPROACH) {
-                g_robot_mode = (robot_mode_t)requested;
-            }
-        }
-        const char *label = (g_robot_mode == ROBOT_MODE_SCAN_APPROACH) ? "scan" : "wifi";
-        return snprintf(result, max_result_len, "mode:%s", label);
+                       g_sensor_data.temp_valid ? 1 : 0);
     }
 
     // Movement commands

@@ -25,6 +25,12 @@
 #define I2C_TEMP_SDA_PIN I2C_SDA_PIN
 #define I2C_TEMP_SCL_PIN I2C_SCL_PIN
 
+// Control modes (local only; WiFi page no longer toggles)
+typedef enum {
+    ROBOT_MODE_WIFI_CONTROL = 0,
+    ROBOT_MODE_SCAN_APPROACH = 1,
+} robot_mode_t;
+
 // Sensors
 tfluna_t lidar_sensor;
 fix15 acceleration[3], gyro[3];
@@ -39,6 +45,41 @@ static const char* mode_to_string(robot_mode_t mode) {
 
 static void handle_scan_approach_mode(void) {
 
+    float temps[9] = {0.0f};
+    float highest_temp;
+    int hottest_index;
+    int turn_counter = 0;
+
+    printf("Going CounterClockwise\n");
+    for (int i = 0; i < 4; i++) {
+        ccw();
+    }
+
+    // Take first measurement
+    sleep_ms(1000);
+    temps[turn_counter] = g_sensor_data.temp_f;
+    highest_temp = temps[turn_counter];
+    hottest_index = turn_counter;
+
+    printf("Going Clockwise\n");
+    for (int i = 0; i < 8; i++) {
+        cw();
+        sleep_ms(1000);
+        turn_counter++;
+        temps[turn_counter] = g_sensor_data.temp_f;
+        if (temps[turn_counter] > highest_temp) {
+            highest_temp = temps[turn_counter];
+            hottest_index = turn_counter;
+        }
+    }
+
+    // Return to hottest pose
+    while (turn_counter != hottest_index) {
+        ccw();
+        turn_counter--;
+    }
+
+    // Do Something
 }
 
 void print_menu(void) {
@@ -309,7 +350,7 @@ int main(void) {
     //setup_servos();
     printf("I am Ready!\n");
     
-    print_menu();
+    //print_menu();
     
     bool running = true;
     robot_mode_t last_mode = g_robot_mode;
