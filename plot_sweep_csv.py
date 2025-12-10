@@ -77,7 +77,7 @@ def plot_sweep(angles: List[float], distances: List[float], temps: List[float]) 
 
     sc1 = ax_polar.scatter(theta, distances, c=temps_f, cmap=cmap, norm=norm, s=36, linewidth=0.4, edgecolors="black")
     ax_polar.set_theta_zero_location("N")  # Heading 0° at the top
-    ax_polar.set_theta_direction(-1)       # Clockwise rotation
+    ax_polar.set_theta_direction(1)        # Counterclockwise rotation (flipped to match real model)
     ax_polar.set_title("Polar sweep (angle vs distance)\ncolor = temp °F")
     ax_polar.grid(True, alpha=0.3)
 

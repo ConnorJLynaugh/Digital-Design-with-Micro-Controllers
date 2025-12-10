@@ -105,14 +105,28 @@ static void sweep_collect_sample_if_due(void) {
     if (!g_map.active) return;
 
     uint64_t now_us = time_us_64();
-    if ((now_us - g_last_collect) <= 20000) return; // ~50 Hz
+    if ((now_us - g_last_collect) <= 10000) return; // ~100 Hz
+
+    // Use same heading we publish to WiFi to keep displays consistent
+    float heading = g_sensor_data.heading_valid ? g_sensor_data.heading : g_gyro_heading;
+    while (heading < 0.0f) heading += 360.0f;
+    while (heading >= 360.0f) heading -= 360.0f;
 
     uint16_t dist = read_lidar_filtered(3);
     float temp = read_temp_filtered(2);
 
-    map_add(&g_map, g_gyro_heading, dist, temp);
-    printf("Angle: %6.1f° | Distance: %4d cm | Temp: %5.1f°C | Samples: %u\n",
-           g_gyro_heading, dist, temp, g_map.count);
+    // Skip far/noisy points to keep plots focused
+    if (dist <= 100) {
+        map_add(&g_map, heading, dist, temp);
+    }
+    // Emit a compact line every sample for live plotting/CSV capture
+    printf("H:%.2f,D:%u,T:%.2f\n", g_gyro_heading, dist, temp);
+    // Throttle verbose logging to reduce UART load during fast sampling
+    static uint8_t log_div = 0;
+    if ((log_div++ % 20) == 0) {
+        printf("Angle: %6.1f° | Distance: %4d cm | Temp: %5.1f°C | Samples: %u\n",
+               g_gyro_heading, dist, temp, g_map.count);
+    }
     g_last_collect = now_us;
 }
 
@@ -531,6 +545,7 @@ int main(void) {
     
     printf("Please wait for 10 seconds...\n");
     stand_up();
+    xposition();
     //setup_servos();
     printf("I am Ready!\n");
     
@@ -842,6 +857,7 @@ int main(void) {
             if (angle_rotated >= 360.0f) {
                 g_map.active = false;
                 g_sweep_started = false;
+                printf("SWEEP_DONE\n");
                 dump_map_csv_block();
                 printf("360° sweep complete! Samples: %u\n", g_map.count);
             } else if ((now_us - g_last_rotate) > 2000000) {

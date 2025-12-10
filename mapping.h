@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define MAP_MAX_POINTS 2048
+#define MAP_MAX_POINTS 4096
 
 typedef struct {
     bool active;
