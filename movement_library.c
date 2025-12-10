@@ -79,7 +79,7 @@ void thigh_2(int angle) {
 }
 
 void thigh_3(int angle) {
-    pca9685_set_pwm(&pwm, 1, 0, angles_to_pwm(angle, 620, 380, 180, 90));
+    pca9685_set_pwm(&pwm, 7, 0, angles_to_pwm(angle, 620, 380, 180, 90));
 }
 
 void thigh_4(int angle) {
@@ -407,7 +407,7 @@ void left(void) {
 void hi(void) {
     printf("Hello!! HUMAN!\n");
     xposition();
-    shift_to(3);
+    shift_to(1);
     thigh_3(170);
     
     for(int i = 0; i < 5; i++) {

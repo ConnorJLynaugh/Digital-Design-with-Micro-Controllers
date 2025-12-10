@@ -161,15 +161,15 @@ static const char HOME_PAGE[] =
 "<div class='card'>"
 "<h2>Actions</h2>"
 "<div class='acts'>"
-"<button onclick=\"c('hi')\">Hi</button>"
 "<button onclick=\"c('sit')\">Sit</button>"
 "<button onclick=\"c('standup')\">Stand</button>"
+"<button onclick=\"c('hi')\">Hi</button>"
 "<button onclick=\"c('shuffle')\">Shuffle</button>"
 "<button onclick=\"c('scan_approach')\">Scan/Approach</button>"
 "<button onclick=\"c('sweep')\">360° Sweep</button>"
-"<button class='link' onclick=\"location.href='/map'\">View Map</button>"
 "<button onclick=\"l(1)\">LED On</button>"
 "<button onclick=\"l(0)\">LED Off</button>"
+"<button class='link' onclick=\"location.href='/map'\">View Map</button>"
 "</div>"
 "</div>"
 "<script>"
@@ -185,7 +185,7 @@ static const char HOME_PAGE[] =
 "document.getElementById('t').textContent=d.tv?d.temp_f.toFixed(1):'--';"
 
 "}).catch(e=>console.log(e))}"
-"setInterval(u,1000);u()"
+"setInterval(u,200);u()"
 "</script>"
 "</body></html>";
 
@@ -223,7 +223,7 @@ static const char MAP_PAGE[] =
 "function clear(ctx){ctx.clearRect(0,0,ctx.canvas.width,ctx.canvas.height);}"
 "function drawPolar(data){const w=polar.width=polar.clientWidth*devicePixelRatio;const h=polar.height=polar.clientHeight*devicePixelRatio;const cx=w/2,cy=h/2;const r=Math.min(cx,cy)*0.9;clear(pc);pc.translate(cx,cy);pc.strokeStyle='#222';for(let i=0;i<8;i++){const a=i*Math.PI/4;pc.beginPath();pc.moveTo(0,0);pc.lineTo(r*Math.sin(a),-r*Math.cos(a));pc.stroke();}pc.beginPath();pc.arc(0,0,r,0,Math.PI*2);pc.stroke();data.forEach(p=>{const ang=p.a*Math.PI/180;const rad=Math.min(r,p.d);pc.fillStyle=tempColor(p.t);pc.beginPath();pc.arc(rad*Math.sin(ang),-rad*Math.cos(ang),6,0,Math.PI*2);pc.fill();});pc.setTransform(1,0,0,1,0,0);}"
 "function drawTemp(data){const w=temp.width=temp.clientWidth*devicePixelRatio;const h=temp.height=temp.clientHeight*devicePixelRatio;clear(tc);if(!data.length)return;const angles=data.map(p=>p.a),temps=data.map(p=>p.t);const minT=Math.min(...temps),maxT=Math.max(...temps);const minA=0,maxA=360;const pad=30;const scaleX=(w-2*pad)/(maxA-minA||1);const scaleY=(h-2*pad)/(maxT-minT||1);tc.strokeStyle='#555';tc.lineWidth=1;tc.beginPath();tc.moveTo(pad,h-pad);tc.lineTo(w-pad,h-pad);tc.moveTo(pad,h-pad);tc.lineTo(pad,pad);tc.stroke();tc.beginPath();tc.strokeStyle='#777';data.forEach((p,i)=>{const x=pad+(p.a-minA)*scaleX;const y=h-pad-(p.t-minT)*scaleY;if(i===0)tc.moveTo(x,y);else tc.lineTo(x,y);});tc.stroke();data.forEach(p=>{const x=pad+(p.a-minA)*scaleX;const y=h-pad-(p.t-minT)*scaleY;tc.fillStyle=tempColor(p.t);tc.beginPath();tc.arc(x,y,4,0,Math.PI*2);tc.fill();});tc.fillStyle='#aaa';tc.font=`${12*devicePixelRatio}px Arial`;tc.fillText('Angle (deg)',w/2-30,pad/2);tc.save();tc.translate(pad/2,h/2+20);tc.rotate(-Math.PI/2);tc.fillText('Temp (C)',0,0);tc.restore();}"
-"setInterval(draw,500);setInterval(checkStatus,1000);draw();"
+"setInterval(draw,100);setInterval(checkStatus,1000);draw();"
 "</script>"
 "</body></html>";
 
@@ -594,17 +594,16 @@ void wifi_ap_background(void) {
     cyw43_arch_poll();
     cyw43_arch_wait_for_work_until(make_timeout_time_ms(1));
 #endif
-
     command_t cmd = dequeue_command();
     switch (cmd) {
-        case CMD_FORWARD:      forward(); break;
-        case CMD_BACKWARD:     backward(); break;
-        case CMD_LEFT:         left(); break;
-        case CMD_RIGHT:        right(); break;
+        case CMD_FORWARD:      backward(); break;
+        case CMD_BACKWARD:     forward(); break;
+        case CMD_LEFT:         right(); break;
+        case CMD_RIGHT:        left(); break;
         case CMD_CCW:          ccw(); break;
         case CMD_CW:           cw(); break;
-        case CMD_CREEP_FWD:    c_f(); break;
-        case CMD_CREEP_BWD:    c_b(); break;
+        case CMD_CREEP_FWD:    c_b(); break;
+        case CMD_CREEP_BWD:    c_f(); break;
         case CMD_HI:           hi(); break;
         case CMD_SHUFFLE:      shuffle(); break;
         case CMD_HUMPING:      humping(); break;

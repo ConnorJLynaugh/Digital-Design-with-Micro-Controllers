@@ -57,11 +57,82 @@ static bool g_sweep_started = false;
 static float g_prev_heading = 0.0f;
 static float g_rotated_sum = 0.0f;
 
+// Simple helpers to gather cleaner measurements during a sweep
+static uint16_t median_u16(uint16_t *vals, int n) {
+    for (int i = 0; i < n - 1; i++) {
+        for (int j = i + 1; j < n; j++) {
+            if (vals[j] < vals[i]) {
+                uint16_t tmp = vals[i];
+                vals[i] = vals[j];
+                vals[j] = tmp;
+            }
+        }
+    }
+    return vals[n / 2];
+}
+
+static uint16_t read_lidar_filtered(int samples) {
+    if (!g_found_lidar) return 0;
+    uint16_t buf[8];
+    int count = 0;
+    for (int i = 0; i < samples && count < 8; i++) {
+        tfluna_data_t data;
+        if (tfluna_read_data(&lidar_sensor, &data) && data.valid && data.distance > 0) {
+            buf[count++] = data.distance;
+        }
+        sleep_ms(2);
+    }
+    if (count == 0) return 0;
+    return median_u16(buf, count);
+}
+
+static float read_temp_filtered(int samples) {
+    if (!g_found_temp) return 0.0f;
+    float sum = 0.0f;
+    int count = 0;
+    for (int i = 0; i < samples; i++) {
+        float obj, amb;
+        if (mlx90614_read_both_temps(&obj, &amb)) {
+            sum += obj;
+            count++;
+        }
+        sleep_ms(2);
+    }
+    return count ? (sum / count) : 0.0f;
+}
+
+static void sweep_collect_sample_if_due(void) {
+    if (!g_map.active) return;
+
+    uint64_t now_us = time_us_64();
+    if ((now_us - g_last_collect) <= 20000) return; // ~50 Hz
+
+    uint16_t dist = read_lidar_filtered(3);
+    float temp = read_temp_filtered(2);
+
+    map_add(&g_map, g_gyro_heading, dist, temp);
+    printf("Angle: %6.1f° | Distance: %4d cm | Temp: %5.1f°C | Samples: %u\n",
+           g_gyro_heading, dist, temp, g_map.count);
+    g_last_collect = now_us;
+}
+
 static void dump_map_csv(void) {
     printf("angle_deg,distance_cm,temp_c\n");
     for (uint16_t i = 0; i < g_map.count; i++) {
         printf("%.1f,%u,%.1f\n", g_map.angles[i], g_map.distances[i], g_map.temps[i]);
     }
+}
+
+static void dump_map_csv_block(void) {
+    if (g_map.count == 0) {
+        printf("# sweep_csv_begin (no samples)\n");
+        printf("# sweep_csv_end\n");
+        return;
+    }
+
+    printf("\n# sweep_csv_begin\n");
+    dump_map_csv();
+    printf("# sweep_csv_end\n\n");
 }
 
 static const char* mode_to_string(robot_mode_t mode) {
@@ -231,7 +302,8 @@ static inline void refresh_sensor_data(void) {
     // Keep heading fresh even when the main loop is blocked
     update_heading_from_gyro();
 
-    if (absolute_time_diff_us(g_last_sensor_update, get_absolute_time()) > 500000) {
+    // Faster sensor refresh for snappier web updates (~100 ms)
+    if (absolute_time_diff_us(g_last_sensor_update, get_absolute_time()) > 100000) {
         update_sensor_data(g_found_imu, g_found_lidar, g_found_temp);
         g_last_sensor_update = get_absolute_time();
     } else if (g_found_imu) {
@@ -245,11 +317,14 @@ static inline void refresh_sensor_data(void) {
 void robot_background_tick(void) {
     update_heading_from_gyro();
     refresh_sensor_data();
+    // Keep collecting sweep samples even while movement functions are running
+    sweep_collect_sample_if_due();
 }
 
 void start_mapping_sweep(void) {
     if (g_found_imu && g_found_lidar && g_found_temp) {
         printf("Starting 360° sweep...\n");
+        printf("CSV will print at completion between '# sweep_csv_begin' and '# sweep_csv_end'.\n");
         calibrate_gyro_bias();
         g_gyro_heading = 0.0f;
         g_last_gyro_time = time_us_64();
@@ -758,30 +833,8 @@ int main(void) {
                 g_prev_heading = g_gyro_heading;
             }
 
-            // Collect data ~4 Hz
-            if ((now_us - g_last_collect) > 250000) {
-                uint16_t dist = 0;
-                float temp = 0.0f;
-
-                if (g_found_lidar) {
-                    tfluna_data_t data;
-                    if (tfluna_read_data(&lidar_sensor, &data) && data.valid) {
-                        dist = data.distance;
-                    }
-                }
-
-                if (g_found_temp) {
-                    float obj, amb;
-                    if (mlx90614_read_both_temps(&obj, &amb)) {
-                        temp = obj;
-                    }
-                }
-
-                map_add(&g_map, g_gyro_heading, dist, temp);
-                printf("Angle: %6.1f° | Distance: %4d cm | Temp: %5.1f°C\n",
-                       g_gyro_heading, dist, temp);
-                g_last_collect = now_us;
-            }
+            // Collect data (also runs inside robot_background_tick during motion)
+            sweep_collect_sample_if_due();
 
             // Rotate every 2s until 360 covered
             float angle_rotated = g_rotated_sum;
@@ -789,8 +842,8 @@ int main(void) {
             if (angle_rotated >= 360.0f) {
                 g_map.active = false;
                 g_sweep_started = false;
-                dump_map_csv();
-                printf("360° sweep complete!\n");
+                dump_map_csv_block();
+                printf("360° sweep complete! Samples: %u\n", g_map.count);
             } else if ((now_us - g_last_rotate) > 2000000) {
                 ccw();
                 g_last_rotate = now_us;
