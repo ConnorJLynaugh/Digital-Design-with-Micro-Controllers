@@ -1,14 +1,3 @@
-#!/usr/bin/env python3
-"""
-Offline plotter for 360° sweep CSV dumped over serial.
-
-Usage:
-    python plot_sweep_csv.py sweep.csv
-
-The script tolerates extra log lines; it only consumes rows that look like
-"angle_deg,distance_cm,temp_c". Distance == 0 rows are dropped by default.
-"""
-
 import argparse
 import csv
 import math
