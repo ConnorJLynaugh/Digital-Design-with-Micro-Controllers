@@ -1,1 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>12-DOF Quadruped Robot - ECE 4760 Final Project</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+        }
+        
+        .container {
+            display: flex;
+            min-height: 100vh;
+        }
+        
+        /* Sidebar Navigation */
+        .sidebar {
+            width: 250px;
+            background-color: #2c3e50;
+            color: white;
+            padding: 20px;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+        }
+        
+        .sidebar h2 {
+            margin-bottom: 20px;
+            font-size: 18px;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 10px;
+        }
+        
+        .sidebar nav ul {
+            list-style: none;
+        }
+        
+        .sidebar nav ul li {
+            margin-bottom: 10px;
+        }
+        
+        .sidebar nav ul li a {
+            color: white;
+            text-decoration: none;
+            display: block;
+            padding: 8px 10px;
+            border-radius: 4px;
+            transition: background-color 0.3s;
+        }
+        
+        .sidebar nav ul li a:hover {
+            background-color: #34495e;
+        }
+        
+        /* Main Content */
+        .main-content {
+            margin-left: 250px;
+            padding: 40px;
+            width: calc(100% - 250px);
+        }
+        
+        h1 {
+            color: #2c3e50;
+            margin-bottom: 10px;
+            font-size: 32px;
+        }
+        
+        h2 {
+            color: #2c3e50;
+            margin-top: 30px;
+            margin-bottom: 15px;
+            font-size: 24px;
+            border-bottom: 2px solid #3498db;
+            padding-bottom: 5px;
+        }
+        
+        h3 {
+            color: #34495e;
+            margin-top: 20px;
+            margin-bottom: 10px;
+            font-size: 20px;
+        }
+        
+        .subtitle {
+            color: #7f8c8d;
+            font-size: 18px;
+            margin-bottom: 30px;
+        }
+        
+        p {
+            margin-bottom: 15px;
+        }
+        
+        ul {
+            margin-left: 30px;
+            margin-bottom: 15px;
+        }
+        
+        ul li {
+            margin-bottom: 8px;
+        }
+        
+        img {
+            max-width: 100%;
+            height: auto;
+            margin: 20px 0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        
+        .soundbite {
+            background-color: #ecf0f1;
+            padding: 20px;
+            border-left: 4px solid #3498db;
+            margin: 20px 0;
+            font-style: italic;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar">
+            <h2>Navigation</h2>
+            <nav>
+                <ul>
+                    <li><a href="#intro">Introduction</a></li>
+                    <li><a href="#high-level">High Level Design</a></li>
+                    <li><a href="#program-hardware">Program/Hardware Design</a></li>
+                    <li><a href="#results">Results</a></li>
+                    <li><a href="#conclusions">Conclusions</a></li>
+                    <li><a href="#appendix">Appendix</a></li>
+                </ul>
+            </nav>
+        </aside>
 
+        <!-- Main Content -->
+        <main class="main-content">
+            <section id="intro">
+                <h1>12-DOF Quadruped Robot with Environmental Mapping</h1>
+                <p class="subtitle"><strong>Sarah Grace Brown (seb353) & Connor Lynaugh (cjl298)</strong><br>
+                Cornell University - ECE 4760: Designing with Microcontrollers - Fall 2024</p>
+
+                <div class="soundbite">
+                    <strong>Project Sound Bite:</strong> A 12-DOF quadruped robot with 3 servos per leg and WiFi control that uses environmental feedback from an IMU, LiDAR, and infrared temp sensor to navigate, identify targets, and map its environment autonomously using distance and temperature data.
+                </div>
+
+                <h2>Summary</h2>
+                <p>We designed and built a 12 degree-of-freedom (3 servos per leg × 4 legs) quadruped robot controlled by a Raspberry Pi Pico W, featuring integrated environmental sensing and a wireless WiFi controller. Starting from a custom CAD body and 3D-printed frame, the robot combines mechanical engineering and embedded electrical engineering to create a platform capable of coordinated four-legged locomotion, heading determination, environmental mapping, and target detection. In order to do so, our system leverages several sensors including an IMU, a solid state LiDAR sensor, and a contact-less infrared sensor.</p>
+
+                <img src="images/robot_assembled.jpg" alt="Assembled Quadruped Robot">
+                <p style="text-align: center; color: #7f8c8d; font-size: 14px;"><em>Figure 1: Assembled quadruped robot with sensor array</em></p>
+
+                <h2>What We Did</h2>
+                <p>Our project implements a fully functional walking robot with the following key features:</p>
+
+                <h3>Mechanical Design</h3>
+                <p>We created a custom 3D-printed body and leg assemblies optimized for our specific servo operation requirements and sensor placement. After encountering flexibility issues with initial prints due to insufficient infill, we redesigned the frame to provide rigid mounting points for all four legs and the twelve MG90S servos while accommodating the electronics and wiring on the body through implementing a 2-layer mounting system, enclosing all of the servo cables. The design includes TPU grippy feet for improved traction and stability. The leg files are based off an <a href="https://www.instructables.com/3D-Printed-Raspberry-Pi-Spider-Robot-Platform/" target="_blank">existing online design</a>, but the attachment to the body and the body itself is all custom to allow for mounting of the Raspberry Pi and sensors.</p>
+
+                <img src="images/cad_body_top.png" alt="CAD Body Design - Top View">
+                <p style="text-align: center; color: #7f8c8d; font-size: 14px;"><em>Figure 2: Custom body CAD design - top view</em></p>
+
+                <img src="images/cad_body_iso.png" alt="CAD Body Design - Isometric View">
+                <p style="text-align: center; color: #7f8c8d; font-size: 14px;"><em>Figure 3: Custom body CAD design - isometric view showing 2-layer structure</em></p>
+
+                <img src="images/cad_assembly_top.png" alt="Full Assembly - Top View">
+                <p style="text-align: center; color: #7f8c8d; font-size: 14px;"><em>Figure 4: Complete robot assembly - top view</em></p>
+
+                <img src="images/cad_assembly_iso.png" alt="Full Assembly - Isometric View">
+                <p style="text-align: center; color: #7f8c8d; font-size: 14px;"><em>Figure 5: Complete robot assembly - isometric view</em></p>
+
+                <h3>Locomotion System</h3>
+                <p>Twelve servos provide three degrees of freedom per leg (joint rotation, thigh angle, and calf angle), controlled via an Adafruit PCA9685 16-channel PWM driver over I2C. We implemented coordinated gait patterns that enable the robot to walk forward, backward, turn in place, and complete fun gestures such as waving, squatting, and shuffling. We took initial servo positions and control sequences for these movements from a <a href="https://github.com/ConnorLynaugh/Digital-Design-with-Micro-Controllers" target="_blank">Python library</a> and adapted them for C.</p>
+
+                <h3>Sensor Integration</h3>
+                <p>The robot features numerous sensors that work together to allow for autonomous navigation and environmental mapping:</p>
+                <ul>
+                    <li><strong>MPU6050 IMU</strong> for heading determination and orientation tracking to map the environment</li>
+                    <li><strong>TF-Luna LiDAR</strong> for distance ranging (0.2-8m) to detect obstacles and map surroundings</li>
+                    <li><strong>MLX90614 infrared temperature sensor</strong> for heat signature detection and thermal mapping (effective range ~30cm for human-sized targets)</li>
+                </ul>
+
+                <img src="images/wiring_diagram.png" alt="System Wiring Diagram">
+                <p style="text-align: center; color: #7f8c8d; font-size: 14px;"><em>Figure 6: Complete system wiring diagram</em></p>
+
+                <h3>Wireless Control</h3>
+                <p>A WiFi-based control interface allows real-time command and control from a computer or mobile device on the local network (we used an iPad), enabling remote operation and monitoring of the robot's sensor data.</p>
+
+                <h2>Why We Built This</h2>
+                <p>We wanted to create a robot that truly interacts with the world around it. Rather than building a machine that simply responds to pre-programmed commands, we set out to design a sensing platform that could perceive, understand, and navigate complex environments autonomously while moving in a unique and challenging way. The platform we built has the potential to execute various autonomous missions with different sensor-driven objectives.</p>
+
+                <p>Inspired by how living creatures use multiple sensory inputs simultaneously, we aimed to replicate this approach of combining data types to make decisions in a robotic platform, and have it sense in ways humans can't—in this case, thermal detection. By combining LiDAR for spatial mapping, infrared sensing for thermal detection, and IMU data for orientation tracking, our quadruped builds an understanding of its surroundings and makes intelligent decisions about movement and target identification.</p>
+
+                <p>This project represents the intersection of our mechanical and electrical engineering backgrounds. Coordinating twelve servos in real-time while processing sensor data and maintaining wireless communication pushed us to deeply understand the integration between hardware design, software architecture, and control systems. We chose a quadruped specifically because legged locomotion is more complex than wheeled robots and presents unique challenges in stability, gait coordination, and terrain adaptability.</p>
+
+                <p>The practical applications are compelling: quadruped robots with environmental sensing have real-world potential in search and rescue operations (thermal sensing to locate people), industrial inspection in hazardous environments, and exploration of inaccessible terrain. Or even simpler, it can act as a pet and follow you around! Building from scratch gave us the flexibility to customize the sensor suite and control functions for these use cases while demonstrating that sophisticated autonomous robotics is achievable on an affordable microcontroller platform.</p>
+            </section>
+
+            <!-- Additional sections will go here -->
+
+        </main>
+    </div>
+</body>
+</html>
