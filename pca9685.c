@@ -1,7 +1,6 @@
 #include "pca9685.h"
 #include <math.h>
-#include <stdint.h>  // ← ADD THIS LINE
-
+#include <stdint.h>
 
 static void pca9685_write_byte(PCA9685 *pca, uint8_t reg, uint8_t value) {
     uint8_t buf[2] = {reg, value};
